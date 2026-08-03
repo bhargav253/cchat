@@ -1,4 +1,3 @@
-import { startRegistration } from "@simplewebauthn/browser";
 import { createPairingProof, generateNonExportableIdentity } from "./device-identity.ts";
 
 type Invitation = {
@@ -56,10 +55,6 @@ async function pair(invitation: string, secret: string): Promise<void> {
         if (message.type === "pairing.rejected") throw new Error(String(message.error ?? "Pairing rejected"));
         if (message.type !== "pairing.complete") return;
         window.clearTimeout(timeout);
-        const enrollmentToken = String(message.enrollmentToken ?? "");
-        if (!enrollmentToken) throw new Error("Relay did not authorize Face ID enrollment");
-        status.textContent = "Confirm Face ID to protect cchat access…";
-        await registerPasskey(phoneDeviceId, enrollmentToken);
         await saveDevice({
           version: 1,
           installationId: metadata.installationId,
@@ -69,9 +64,10 @@ async function pair(invitation: string, secret: string): Promise<void> {
           phoneIdentityPublicKey: identity.publicKey,
           phoneIdentityPrivateKey: identity.privateKey,
         });
-        status.textContent = "Paired and protected with Face ID.";
-        button.textContent = "Secured";
+        status.textContent = "Identity paired. Continuing to bridge-verified Face ID setup…";
+        button.textContent = "Paired";
         socket.close(1000, "Complete");
+        location.replace("/");
       } catch (error) {
         fail(error instanceof Error ? error.message : String(error));
         socket.close(1008, "Pairing rejected");
@@ -85,19 +81,6 @@ async function pair(invitation: string, secret: string): Promise<void> {
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
-}
-
-async function registerPasskey(deviceId: string, enrollmentToken: string): Promise<void> {
-  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${enrollmentToken}` };
-  const optionsResponse = await fetch("/api/v1/webauthn/register/options", {
-    method: "POST", headers, body: JSON.stringify({ deviceId }),
-  });
-  if (!optionsResponse.ok) throw new Error(await responseError(optionsResponse));
-  const registration = await startRegistration({ optionsJSON: await optionsResponse.json() });
-  const verifyResponse = await fetch("/api/v1/webauthn/register/verify", {
-    method: "POST", headers, body: JSON.stringify({ deviceId, response: registration }),
-  });
-  if (!verifyResponse.ok) throw new Error(await responseError(verifyResponse));
 }
 
 function saveDevice(value: unknown): Promise<void> {

@@ -35,9 +35,9 @@ export type EncryptedEnvelope = {
   ciphertext: string;
 };
 
-type PhoneHandshakeState = {
+export type PhoneHandshakeState = {
   hello: PhoneHello;
-  phoneIdentityPrivateKey: Uint8Array;
+  sign: (message: Uint8Array) => Promise<Uint8Array>;
   phoneEphemeralPublicKey: Uint8Array;
   phoneEphemeralPrivateKey: Uint8Array;
 };
@@ -102,6 +102,24 @@ export async function createPhoneHello(params: {
   phoneIdentity: KeyPair;
   bridgeIdentityPublicKey: string;
 }): Promise<{ state: PhoneHandshakeState; hello: PhoneHello }> {
+  return createPhoneHelloWithSigner({
+    installationId: params.installationId,
+    phoneDeviceId: params.phoneDeviceId,
+    bridgeDeviceId: params.bridgeDeviceId,
+    phoneIdentityPublicKey: params.phoneIdentity.publicKey,
+    bridgeIdentityPublicKey: params.bridgeIdentityPublicKey,
+    sign: async (message) => sodium.crypto_sign_detached(message, decode(params.phoneIdentity.privateKey)),
+  });
+}
+
+export async function createPhoneHelloWithSigner(params: {
+  installationId: string;
+  phoneDeviceId: string;
+  bridgeDeviceId: string;
+  phoneIdentityPublicKey: string;
+  bridgeIdentityPublicKey: string;
+  sign: (message: Uint8Array) => Promise<Uint8Array>;
+}): Promise<{ state: PhoneHandshakeState; hello: PhoneHello }> {
   await initializeCrypto();
   const ephemeral = sodium.crypto_kx_keypair();
   const unsigned = {
@@ -109,17 +127,17 @@ export async function createPhoneHello(params: {
     installationId: params.installationId,
     phoneDeviceId: params.phoneDeviceId,
     bridgeDeviceId: params.bridgeDeviceId,
-    phoneIdentityPublicKey: params.phoneIdentity.publicKey,
+    phoneIdentityPublicKey: params.phoneIdentityPublicKey,
     bridgeIdentityPublicKey: params.bridgeIdentityPublicKey,
     phoneEphemeralPublicKey: encode(ephemeral.publicKey),
   };
-  const signature = sodium.crypto_sign_detached(phoneHelloTranscript(unsigned), decode(params.phoneIdentity.privateKey));
+  const signature = await params.sign(phoneHelloTranscript(unsigned));
   const hello: PhoneHello = { ...unsigned, signature: encode(signature) };
   return {
     hello,
     state: {
       hello,
-      phoneIdentityPrivateKey: decode(params.phoneIdentity.privateKey),
+      sign: params.sign,
       phoneEphemeralPublicKey: ephemeral.publicKey,
       phoneEphemeralPrivateKey: ephemeral.privateKey,
     },
@@ -191,7 +209,7 @@ export async function finishPhoneHandshake(params: {
     decode(params.reply.bridgeEphemeralPublicKey),
   );
   return {
-    confirmation: { signature: encode(sodium.crypto_sign_detached(transcript, params.state.phoneIdentityPrivateKey)) },
+    confirmation: { signature: encode(await params.state.sign(transcript)) },
     channel: new EncryptedChannel({
       channelId: channelId(transcript),
       sendKey: sessionKeys.sharedTx,

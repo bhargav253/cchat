@@ -16,3 +16,15 @@ button:disabled { opacity: .45; cursor: default; }
 .pair-status { min-height: 42px; color: #a5a79a; font-size: 12px; line-height: 1.5; }
 .pair-status.error { color: #ff958f; }
 .status.error { color: #ff958f; }
+#approval-panel { margin-top: 24px; padding: 18px; border: 1px solid #4b503d; border-radius: 16px; background: #181a16; text-align: left; }
+#approval-panel h2 { margin: 0 0 10px; font-size: 17px; }
+#approval-summary { max-height: 180px; overflow: auto; white-space: pre-wrap; color: #c7c9ba; font-size: 11px; }
+.approval-actions { display: flex; gap: 8px; }
+.approval-actions button { width: auto; flex: 1; }
+button.secondary { background: #383b31; color: #eeeede; }
+#chat-panel { margin-top: 24px; text-align: left; }
+.session-row { display: flex; gap: 8px; }
+select, textarea { width: 100%; border: 1px solid #3a3d33; background: #181a16; color: #eeeede; border-radius: 12px; padding: 12px; font: inherit; }
+.session-row button { width: auto; margin: 0; }
+#conversation-output { min-height: 220px; max-height: 45vh; overflow: auto; padding: 12px; border: 1px solid #30342a; border-radius: 12px; white-space: pre-wrap; font-size: 11px; }
+textarea { margin-top: 8px; resize: vertical; }

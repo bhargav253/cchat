@@ -1,13 +1,14 @@
 # cchat
 
 > **Security status:** experimental. The public relay supports secure device
-> pairing and passkeys, but encrypted Codex routing is not enabled yet.
+> pairing, bridge-verified passkeys, and encrypted Codex routing. Independent
+> security review is still recommended before treating it as production-ready.
 
 cchat is a local-first companion UI for existing Codex sessions. The current repository contains a Phase 0 localhost prototype: a small TypeScript bridge hosts Codex App Server on a loopback-only WebSocket and presents a mobile-friendly browser UI.
 
 The local Codex bridge remains loopback-only. The Linode relay supports
-single-use pairing and Face ID/passkey authentication, but does not yet forward
-Codex traffic.
+single-use pairing and opaque encrypted routing. Face ID/passkey verification
+and credential storage remain exclusively on the home bridge.
 
 ## Requirements
 
@@ -89,9 +90,9 @@ cchat is a client of the same Codex App Server protocol, not another AI agent. C
 
 The prototype currently lacks several CLI conveniences: slash commands, attachments, rich terminal interaction, plan controls, model/effort selection, search, and complete handling for every tool or elicitation type. Those gaps will be evaluated before the relay is built.
 
-The secure relay, device pairing, and Face ID/WebAuthn enrollment are connected.
-End-to-end encrypted Codex routing is the next milestone; never expose the local
-bridge directly to a network.
+The secure relay, device pairing, Face ID/WebAuthn, and end-to-end encrypted
+Codex routing are connected. Never expose the local bridge directly to a
+network.
 
 The protocol and relay security work is tracked in
 [docs/security-design.md](docs/security-design.md). Cryptographic primitives and
@@ -118,8 +119,17 @@ npm run pair
 
 The pairing secret is carried in the URL fragment, removed from the phone's
 address bar immediately, and verified by the home bridge rather than the relay.
-Successful pairing immediately registers a passkey with required user
-verification. Encrypted Codex message routing is the next milestone.
+After pairing, the phone establishes an identity-authenticated encrypted channel
+and registers a passkey directly with the bridge. Ordinary prompts use a
+15-minute Face ID session; each command or file-change approval requires fresh
+Face ID bound to that exact approval.
+
+List and revoke paired phones from the workstation:
+
+```bash
+npm run devices -- list
+npm run devices -- revoke <phone-device-id>
+```
 
 ## License
 

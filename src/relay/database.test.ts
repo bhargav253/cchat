@@ -32,7 +32,6 @@ test("relay database stores control-plane records and no transcript tables", asy
     "installations",
     "pairing_invitations",
     "settings",
-    "webauthn_credentials",
   ]);
   for (const forbidden of ["messages", "threads", "turns", "transcripts", "commands"]) {
     assert.equal(tables.includes(forbidden), false);

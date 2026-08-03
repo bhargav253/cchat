@@ -1,33 +1,29 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RelayDatabase } from "./database.ts";
 import { WebSocket, WebSocketServer } from "ws";
-import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
-import { WebAuthnService } from "./webauthn.ts";
 
 const HOST = process.env.CCHAT_RELAY_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.CCHAT_RELAY_PORT ?? 8787);
 const PUBLIC_ORIGIN = process.env.CCHAT_PUBLIC_ORIGIN ?? "https://mycchat.win";
 const DATABASE_PATH = process.env.CCHAT_RELAY_DB ?? "./data/relay.sqlite";
 const publicDir = fileURLToPath(new URL("../../relay-public", import.meta.url));
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 if (!PUBLIC_ORIGIN.startsWith("https://")) throw new Error("CCHAT_PUBLIC_ORIGIN must use HTTPS");
 if (HOST !== "127.0.0.1" && HOST !== "::1") throw new Error("Relay must remain loopback-only behind the TLS reverse proxy");
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("Invalid relay port");
 
 const database = new RelayDatabase(DATABASE_PATH);
-const webauthn = new WebAuthnService(database, {
-  rpName: "cchat",
-  rpID: new URL(PUBLIC_ORIGIN).hostname,
-  expectedOrigin: PUBLIC_ORIGIN,
-});
-const enrollmentTokens = new Map<string, { deviceId: string; expiresAt: number }>();
-const authenticatedSessions = new Map<string, { deviceId: string; expiresAt: number }>();
 database.purgeExpired();
-const cleanup = setInterval(() => database.purgeExpired(), 60 * 60_000);
+const cleanup = setInterval(() => {
+  database.purgeExpired();
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(key);
+}, 60 * 60_000);
 cleanup.unref();
 
 const mimeTypes: Record<string, string> = {
@@ -37,13 +33,18 @@ const mimeTypes: Record<string, string> = {
 };
 
 const server = createServer((request, response) => {
-  response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
+  response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
   response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   response.setHeader("Referrer-Policy", "no-referrer");
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
+
+  if (request.url?.startsWith("/api/") && !takeRateLimit(`http:${clientAddress(request)}`, 60, 60_000)) {
+    response.writeHead(429, { "Content-Type": "application/json", "Retry-After": "60", "Cache-Control": "no-store" }).end('{"error":"Rate limit exceeded"}');
+    return;
+  }
 
   if (request.method === "GET" && request.url === "/healthz") {
     response.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }).end("ok\n");
@@ -80,38 +81,13 @@ const server = createServer((request, response) => {
     }).catch((error) => jsonError(response, error));
     return;
   }
-  if (request.method === "POST" && request.url === "/api/v1/webauthn/register/options") {
-    void readJson(request).then(async (body) => {
-      const deviceId = requiredString(body, "deviceId");
-      requireEnrollment(request.headers.authorization, deviceId, false);
-      json(response, 200, await webauthn.registrationOptions(deviceId));
-    }).catch((error) => jsonError(response, error));
-    return;
-  }
-  if (request.method === "POST" && request.url === "/api/v1/webauthn/register/verify") {
-    void readJson(request).then(async (body) => {
-      const deviceId = requiredString(body, "deviceId");
-      const token = requireEnrollment(request.headers.authorization, deviceId, false);
-      await webauthn.verifyRegistration(deviceId, objectValue(body, "response") as unknown as RegistrationResponseJSON);
-      enrollmentTokens.delete(token);
-      json(response, 200, { verified: true });
-    }).catch((error) => jsonError(response, error));
-    return;
-  }
-  if (request.method === "POST" && request.url === "/api/v1/webauthn/authenticate/options") {
-    void readJson(request).then(async (body) => {
-      json(response, 200, await webauthn.authenticationOptions(requiredString(body, "deviceId")));
-    }).catch((error) => jsonError(response, error));
-    return;
-  }
-  if (request.method === "POST" && request.url === "/api/v1/webauthn/authenticate/verify") {
-    void readJson(request).then(async (body) => {
-      const deviceId = requiredString(body, "deviceId");
-      await webauthn.verifyAuthentication(deviceId, objectValue(body, "response") as unknown as AuthenticationResponseJSON);
-      const sessionToken = randomBytes(32).toString("base64url");
-      const expiresAt = Date.now() + 15 * 60_000;
-      authenticatedSessions.set(sessionToken, { deviceId, expiresAt });
-      json(response, 200, { verified: true, sessionToken, expiresAt });
+  if (request.method === "POST" && request.url === "/api/v1/devices/revoke") {
+    void readJson(request).then((body) => {
+      const installationId = requiredString(body, "installationId");
+      const bridgeDeviceId = requiredString(body, "bridgeDeviceId");
+      authenticateBridgeRequest(request.headers.authorization, installationId, bridgeDeviceId);
+      const revoked = database.revokeDevice(requiredString(body, "phoneDeviceId"), bridgeDeviceId);
+      json(response, revoked ? 200 : 404, { revoked });
     }).catch((error) => jsonError(response, error));
     return;
   }
@@ -138,7 +114,8 @@ const wsServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "/", PUBLIC_ORIGIN);
-  if (url.pathname !== "/api/v1/connect" || request.headers.origin !== PUBLIC_ORIGIN) {
+  if (url.pathname !== "/api/v1/connect" || request.headers.origin !== PUBLIC_ORIGIN ||
+      !takeRateLimit(`ws:${clientAddress(request)}`, 30, 60_000)) {
     socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
@@ -150,6 +127,13 @@ wsServer.on("connection", (socket) => {
   let bridgeInstallationId: string | null = null;
   const connectionIds = new Set<string>();
   const authTimer = setTimeout(() => socket.close(1008, "Authentication timeout"), 10_000);
+  let messageCount = 0;
+  const messageWindow = setInterval(() => { messageCount = 0; }, 60_000);
+  messageWindow.unref();
+  socket.on("message", () => {
+    messageCount += 1;
+    if (messageCount > 240) socket.close(1008, "Message rate limit exceeded");
+  });
   socket.once("message", (raw) => {
     let first: Record<string, unknown>;
     try { first = JSON.parse(raw.toString()) as Record<string, unknown>; }
@@ -185,23 +169,63 @@ wsServer.on("connection", (socket) => {
       }
       clearTimeout(authTimer);
       const connectionId = randomUUID();
-      connectionIds.add(connectionId);
       phoneSockets.set(connectionId, socket);
       send(bridge.socket, { type: "pairing.request", connectionId, invitationId, name: requiredString(first, "name"), request });
+      return;
+    }
+    if (first.type === "phone.connect") {
+      const installationId = requiredString(first, "installationId");
+      const phoneDeviceId = requiredString(first, "phoneDeviceId");
+      const phone = database.getDevice(phoneDeviceId);
+      const bridge = bridgeSockets.get(installationId);
+      if (!phone || phone.kind !== "phone" || phone.installationId !== installationId || phone.revokedAt !== null ||
+          !bridge || bridge.socket.readyState !== WebSocket.OPEN) {
+        socket.close(1008, "Unknown, revoked, or unavailable device"); return;
+      }
+      const frame = objectValue(first, "frame");
+      if (frame.kind !== "hello") { socket.close(1008, "Handshake hello required"); return; }
+      clearTimeout(authTimer);
+      const connectionId = randomUUID();
+      connectionIds.add(connectionId);
+      phoneSockets.set(connectionId, socket);
+      database.touchDevice(phoneDeviceId);
+      send(bridge.socket, { type: "phone.connected", connectionId, phoneDeviceId, frame });
+      socket.on("message", (raw) => {
+        try {
+          const routed = JSON.parse(raw.toString()) as Record<string, unknown>;
+          if (routed.type !== "phone.frame") throw new Error("Unsupported phone frame");
+          const currentBridge = bridgeSockets.get(installationId);
+          if (!currentBridge || currentBridge.socket.readyState !== WebSocket.OPEN) throw new Error("Bridge is offline");
+          send(currentBridge.socket, { type: "phone.frame", connectionId, frame: objectValue(routed, "frame") });
+        } catch (error) {
+          socket.close(1008, error instanceof Error ? error.message : "Invalid frame");
+        }
+      });
       return;
     }
     socket.close(1008, "Authentication required");
   });
   socket.on("close", () => {
     clearTimeout(authTimer);
+    clearInterval(messageWindow);
     if (bridgeInstallationId && bridgeSockets.get(bridgeInstallationId)?.socket === socket) bridgeSockets.delete(bridgeInstallationId);
     for (const id of connectionIds) phoneSockets.delete(id);
+    if (!bridgeInstallationId) {
+      for (const id of connectionIds) {
+        for (const bridge of bridgeSockets.values()) send(bridge.socket, { type: "phone.disconnected", connectionId: id });
+      }
+    }
   });
 });
 
 function handleBridgeMessage(installationId: string, bridgeDeviceId: string, raw: string): void {
   try {
     const message = JSON.parse(raw) as Record<string, unknown>;
+    if (message.type === "phone.frame") {
+      const phone = phoneSockets.get(requiredString(message, "connectionId"));
+      if (phone) send(phone, { type: "phone.frame", frame: objectValue(message, "frame") });
+      return;
+    }
     if (message.type !== "pairing.approve" && message.type !== "pairing.reject") return;
     const connectionId = requiredString(message, "connectionId");
     const phone = phoneSockets.get(connectionId);
@@ -220,14 +244,11 @@ function handleBridgeMessage(installationId: string, bridgeDeviceId: string, raw
       phoneIdentityPublicKey: requiredString(message, "phoneIdentityPublicKey"),
     });
     database.touchDevice(bridgeDeviceId);
-    const enrollmentToken = randomBytes(32).toString("base64url");
-    enrollmentTokens.set(enrollmentToken, { deviceId: requiredString(message, "phoneDeviceId"), expiresAt: Date.now() + 2 * 60_000 });
     send(phone, {
       type: "pairing.complete",
       installationId,
       bridgeDeviceId,
       phoneDeviceId: message.phoneDeviceId,
-      enrollmentToken,
     });
     phone.close(1000, "Pairing complete");
   } catch (error) {
@@ -239,7 +260,7 @@ server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Reques
 server.listen(PORT, HOST, () => {
   console.log(`cchat relay staging server: http://${HOST}:${PORT}`);
   console.log(`public origin: ${PUBLIC_ORIGIN}`);
-  console.log("status: one-time device pairing enabled; encrypted Codex routing not yet enabled");
+  console.log("status: opaque E2E routing enabled; authentication authority remains on the home bridge");
 });
 
 function serveStatic(url: string, response: ServerResponse, headOnly: boolean): void {
@@ -253,7 +274,7 @@ function serveStatic(url: string, response: ServerResponse, headOnly: boolean): 
   }
   response.writeHead(200, {
     "Content-Type": mimeTypes[extname(filePath)] ?? "application/octet-stream",
-    "Cache-Control": "public, max-age=300",
+    "Cache-Control": "no-store",
   });
   if (headOnly) response.end();
   else createReadStream(filePath).pipe(response);
@@ -274,18 +295,6 @@ process.on("SIGTERM", shutdown);
 function authenticateBridgeRequest(authorization: string | undefined, installationId: string, bridgeDeviceId: string): void {
   const match = authorization?.match(/^Bearer ([A-Za-z0-9_-]{32,1024})$/);
   if (!match || !database.authenticateBridge(installationId, bridgeDeviceId, match[1]!)) throw new Error("Bridge authentication failed");
-}
-
-function requireEnrollment(authorization: string | undefined, deviceId: string, consume: boolean): string {
-  const match = authorization?.match(/^Bearer ([A-Za-z0-9_-]{32,1024})$/);
-  const token = match?.[1];
-  const enrollment = token ? enrollmentTokens.get(token) : undefined;
-  if (!token || !enrollment || enrollment.deviceId !== deviceId || enrollment.expiresAt < Date.now()) {
-    if (token) enrollmentTokens.delete(token);
-    throw new Error("Enrollment authorization is invalid or expired");
-  }
-  if (consume) enrollmentTokens.delete(token);
-  return token;
 }
 
 async function readJson(request: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
@@ -324,4 +333,21 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 function jsonError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : "Request failed";
   json(response, /bootstrap|authentication|authorization/i.test(message) ? 401 : 400, { error: message });
+}
+
+function clientAddress(request: import("node:http").IncomingMessage): string {
+  const forwarded = request.headers["x-forwarded-for"];
+  const value = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0];
+  return value?.trim() || request.socket.remoteAddress || "unknown";
+}
+
+function takeRateLimit(key: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  bucket.count += 1;
+  return bucket.count <= limit;
 }

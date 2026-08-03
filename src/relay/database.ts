@@ -14,14 +14,6 @@ export type DeviceRecord = {
   lastSeenAt: number | null;
   revokedAt: number | null;
 };
-export type CredentialRecord = {
-  id: string;
-  deviceId: string;
-  publicKey: Uint8Array;
-  counter: number;
-  transports: string[];
-  backedUp: boolean;
-};
 
 export class RelayDatabase {
   private readonly db: DatabaseSync;
@@ -69,17 +61,6 @@ export class RelayDatabase {
         used_at INTEGER
       ) STRICT;
 
-      CREATE TABLE IF NOT EXISTS webauthn_credentials (
-        credential_id TEXT PRIMARY KEY,
-        device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-        public_key BLOB NOT NULL,
-        counter INTEGER NOT NULL,
-        transports TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        last_used_at INTEGER,
-        backed_up INTEGER NOT NULL CHECK (backed_up IN (0, 1))
-      ) STRICT;
-
       CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         occurred_at INTEGER NOT NULL,
@@ -93,6 +74,8 @@ export class RelayDatabase {
       CREATE INDEX IF NOT EXISTS devices_installation_idx ON devices(installation_id);
       CREATE INDEX IF NOT EXISTS pairing_expiry_idx ON pairing_invitations(expires_at);
       CREATE INDEX IF NOT EXISTS audit_time_idx ON audit_events(occurred_at);
+
+      DROP TABLE IF EXISTS webauthn_credentials;
     `);
   }
 
@@ -279,54 +262,6 @@ export class RelayDatabase {
     return result.changes === 1;
   }
 
-  addWebAuthnCredential(params: {
-    credentialId: string;
-    deviceId: string;
-    publicKey: Uint8Array;
-    counter: number;
-    transports: string[];
-    backedUp: boolean;
-    now?: number;
-  }): void {
-    if (!params.credentialId || params.credentialId.length > 1024) throw new Error("Invalid credential id");
-    const now = params.now ?? Date.now();
-    this.db.prepare(`
-      INSERT INTO webauthn_credentials
-        (credential_id, device_id, public_key, counter, transports, created_at, backed_up)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      params.credentialId,
-      params.deviceId,
-      Buffer.from(params.publicKey),
-      params.counter,
-      JSON.stringify(params.transports),
-      now,
-      params.backedUp ? 1 : 0,
-    );
-  }
-
-  listWebAuthnCredentials(deviceId: string): CredentialRecord[] {
-    return (this.db.prepare(`
-      SELECT credential_id, device_id, public_key, counter, transports, backed_up
-      FROM webauthn_credentials WHERE device_id = ?
-    `).all(deviceId) as Record<string, unknown>[]).map(mapCredential);
-  }
-
-  getWebAuthnCredential(credentialId: string): CredentialRecord | null {
-    const row = this.db.prepare(`
-      SELECT credential_id, device_id, public_key, counter, transports, backed_up
-      FROM webauthn_credentials WHERE credential_id = ?
-    `).get(credentialId) as Record<string, unknown> | undefined;
-    return row ? mapCredential(row) : null;
-  }
-
-  updateWebAuthnCounter(credentialId: string, counter: number, now = Date.now()): void {
-    const result = this.db.prepare(`
-      UPDATE webauthn_credentials SET counter = ?, last_used_at = ? WHERE credential_id = ?
-    `).run(counter, now, credentialId);
-    if (result.changes !== 1) throw new Error("Unknown WebAuthn credential");
-  }
-
   purgeExpired(now = Date.now()): { invitations: number; auditEvents: number } {
     const invitations = this.db.prepare("DELETE FROM pairing_invitations WHERE expires_at < ?").run(now).changes;
     const auditEvents = this.db.prepare("DELETE FROM audit_events WHERE occurred_at < ?").run(now - 30 * 24 * 60 * 60_000).changes;
@@ -385,16 +320,5 @@ function mapDevice(row: Record<string, unknown>): DeviceRecord {
     createdAt: Number(row.created_at),
     lastSeenAt: row.last_seen_at === null ? null : Number(row.last_seen_at),
     revokedAt: row.revoked_at === null ? null : Number(row.revoked_at),
-  };
-}
-
-function mapCredential(row: Record<string, unknown>): CredentialRecord {
-  return {
-    id: String(row.credential_id),
-    deviceId: String(row.device_id),
-    publicKey: new Uint8Array(row.public_key as Uint8Array),
-    counter: Number(row.counter),
-    transports: JSON.parse(String(row.transports)) as string[],
-    backedUp: Number(row.backed_up) === 1,
   };
 }

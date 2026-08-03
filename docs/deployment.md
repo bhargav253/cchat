@@ -1,8 +1,7 @@
 # Dedicated Linode staging deployment
 
-This deployment is intentionally **locked**. It serves the unpaired-device page
-but does not enable pairing, remote Codex access, or encrypted routing until
-those paths are complete and reviewed.
+The public service is an opaque relay. Codex plaintext, passkeys, authentication
+sessions, and approval decisions remain between the phone and home bridge.
 
 ## 1. DNS
 
@@ -86,7 +85,7 @@ caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy
 ```
 
-## 7. Verify the locked deployment
+## 7. Verify the deployment
 
 ```bash
 systemctl status cchat-relay.service --no-pager
@@ -95,8 +94,8 @@ curl -fsS http://127.0.0.1:8787/healthz
 curl -fsSI https://mycchat.win/
 ```
 
-The public page must say that the device is not paired. At this stage there is
-no route capable of reaching Codex.
+An unpaired browser must show the pairing-required state. Verify that relay logs
+and SQLite contain no prompts, responses, paths, commands, or approval bodies.
 
 ## Updates
 

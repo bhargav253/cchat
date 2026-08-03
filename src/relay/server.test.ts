@@ -22,6 +22,9 @@ test("relay pairs a phone only after the authenticated bridge approves its proof
     env: { ...process.env, CCHAT_RELAY_DB: databasePath, CCHAT_RELAY_PORT: String(port), CCHAT_PUBLIC_ORIGIN: origin },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let relayOutput = "";
+  relayProcess.stdout.on("data", (chunk) => { relayOutput += chunk.toString(); });
+  relayProcess.stderr.on("data", (chunk) => { relayOutput += chunk.toString(); });
   context.after(async () => {
     relayProcess.kill("SIGTERM");
     await new Promise((resolve) => relayProcess.once("exit", resolve));
@@ -70,18 +73,23 @@ test("relay pairs a phone only after the authenticated bridge approves its proof
   }));
   const complete = await nextMessage(phone);
   assert.equal(complete.type, "pairing.complete");
-  const unauthorizedOptions = await fetch(`http://127.0.0.1:${port}/api/v1/webauthn/register/options`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: phoneDeviceId }),
-  });
-  assert.equal(unauthorizedOptions.status, 401);
-  const optionsResponse = await fetch(`http://127.0.0.1:${port}/api/v1/webauthn/register/options`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${String(complete.enrollmentToken)}` },
-    body: JSON.stringify({ deviceId: phoneDeviceId }),
-  });
-  assert.equal(optionsResponse.status, 200);
-  const options = await optionsResponse.json() as Record<string, unknown>;
-  assert.equal((options.authenticatorSelection as Record<string, unknown>).userVerification, "required");
+  assert.equal("enrollmentToken" in complete, false);
+
+  const routedPhone = await openSocket(`ws://127.0.0.1:${port}/api/v1/connect`, origin);
+  const opaqueHello = { kind: "hello", hello: { ciphertextMarker: "relay-must-not-interpret-this" } };
+  routedPhone.send(JSON.stringify({ type: "phone.connect", installationId, phoneDeviceId, frame: opaqueHello }));
+  const connected = await nextMessage(bridge);
+  assert.equal(connected.type, "phone.connected");
+  assert.deepEqual(connected.frame, opaqueHello);
+  const opaqueReply = { kind: "envelope", envelope: { ciphertext: "opaque" } };
+  bridge.send(JSON.stringify({ type: "phone.frame", connectionId: connected.connectionId, frame: opaqueReply }));
+  assert.deepEqual((await nextMessage(routedPhone)).frame, opaqueReply);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(relayOutput.includes("relay-must-not-interpret-this"), false);
+  assert.equal(relayOutput.includes(pairingToken), false);
+  const removedWebAuthnRoute = await fetch(`http://127.0.0.1:${port}/api/v1/webauthn/authenticate/options`, { method: "POST" });
+  assert.equal(removedWebAuthnRoute.status, 405);
+  routedPhone.close();
   bridge.close();
 
   const check = new RelayDatabase(databasePath);

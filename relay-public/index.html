@@ -16,6 +16,20 @@
       <p id="home-copy" class="copy">Loading local security state.</p>
       <button id="unlock-button" hidden>Unlock with Face ID</button>
       <div class="status"><span></span><span id="home-status">Relay available</span></div>
+      <section id="approval-panel" hidden>
+        <h2>Codex approval required</h2>
+        <pre id="approval-summary"></pre>
+        <div class="approval-actions">
+          <button data-decision="accept">Face ID and approve</button>
+          <button data-decision="decline" class="secondary">Face ID and decline</button>
+        </div>
+      </section>
+      <section id="chat-panel" hidden>
+        <div class="session-row"><select id="thread-select" aria-label="Codex session"></select><button id="refresh-threads" class="secondary">Refresh</button></div>
+        <pre id="conversation-output"></pre>
+        <textarea id="prompt-input" rows="4" placeholder="Message Codex"></textarea>
+        <div class="approval-actions"><button id="send-prompt">Send</button><button id="interrupt-turn" class="secondary">Interrupt</button></div>
+      </section>
     </main>
   </body>
 </html>

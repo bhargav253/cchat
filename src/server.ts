@@ -4,9 +4,10 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadRemoteConfig, RemoteBridge } from "./bridge/remote.ts";
+import { BridgeWebAuthn } from "./bridge/webauthn.ts";
 
 type JsonObject = Record<string, unknown>;
 type Pending = {
@@ -22,7 +23,6 @@ const CODEX_URL = process.env.CCHAT_CODEX_URL ?? "ws://127.0.0.1:4500";
 const CODEX_BIN = process.env.CCHAT_CODEX_BIN ?? "codex";
 const publicDir = fileURLToPath(new URL("../public", import.meta.url));
 const remoteConfig = await loadRemoteConfig();
-const remoteBridge = remoteConfig ? new RemoteBridge(remoteConfig) : null;
 
 class CodexAppServer {
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -31,7 +31,7 @@ class CodexAppServer {
   private ownsHost = false;
   private nextId = 1;
   private pending = new Map<number, Pending>();
-  private approvalRequests = new Map<string, { rpcId: number; method: string }>();
+  private approvalRequests = new Map<string, { rpcId: number; method: string; actionDigest: string }>();
   private listeners = new Set<(message: JsonObject) => void>();
   private readyPromise: Promise<void> | null = null;
 
@@ -149,10 +149,11 @@ class CodexAppServer {
     return this.request("turn/interrupt", { threadId, turnId });
   }
 
-  resolveApproval(requestId: string, decision: "accept" | "decline" | "cancel"): void {
+  resolveApproval(requestId: string, decision: "accept" | "decline" | "cancel", expectedDigest?: string): void {
     const approval = this.approvalRequests.get(requestId);
     if (!approval) throw new Error("Approval is no longer pending");
     if (!approval.method.includes("requestApproval")) throw new Error("Unsupported approval type");
+    if (expectedDigest !== undefined && expectedDigest !== approval.actionDigest) throw new Error("Approval digest mismatch");
     this.write({ id: approval.rpcId, result: { decision } });
     this.approvalRequests.delete(requestId);
     this.emit({ type: "approval.resolved", requestId, decision });
@@ -208,11 +209,13 @@ class CodexAppServer {
       const requestId = randomUUID();
       if (message.method === "item/commandExecution/requestApproval" ||
           message.method === "item/fileChange/requestApproval") {
-        this.approvalRequests.set(requestId, { rpcId: message.id, method: message.method });
+        const actionDigest = createHash("sha256").update(JSON.stringify({ method: message.method, requestId, params: message.params })).digest("base64url");
+        this.approvalRequests.set(requestId, { rpcId: message.id, method: message.method, actionDigest });
         this.emit({
           type: "approval.requested",
           requestId,
           approvalType: message.method,
+          actionDigest,
           params: message.params,
         });
       } else {
@@ -239,6 +242,11 @@ function formatRpcError(error: unknown): string {
 }
 
 const codex = new CodexAppServer();
+const bridgeWebAuthn = remoteConfig ? await BridgeWebAuthn.load(remoteConfig.relayOrigin) : null;
+const remoteBridge = remoteConfig ? new RemoteBridge(remoteConfig, {
+  onEncryptedRequest: (request) => handleCodexAction(request, "remote"),
+  webauthn: bridgeWebAuthn!,
+}) : null;
 const sockets = new Set<WebSocket>();
 
 function send(socket: WebSocket, message: JsonObject): void {
@@ -249,7 +257,10 @@ function broadcast(message: JsonObject): void {
   for (const socket of sockets) send(socket, message);
 }
 
-codex.onMessage(broadcast);
+codex.onMessage((message) => {
+  broadcast(message);
+  remoteBridge?.broadcastEncrypted(message);
+});
 
 const mimeTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -260,6 +271,23 @@ const mimeTypes: Record<string, string> = {
 };
 
 const server = createServer((request, response) => {
+  if (request.method === "GET" && request.url === "/admin/devices") {
+    if (request.headers["x-cchat-cli"] !== "1" || request.headers.origin || !remoteBridge) {
+      response.writeHead(403).end(); return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(remoteBridge.listTrustedPhones()));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/admin/revoke") {
+    if (request.headers["x-cchat-cli"] !== "1" || request.headers.origin || !remoteBridge) {
+      response.writeHead(403).end(); return;
+    }
+    void readLocalJson(request).then(async (body) => {
+      await remoteBridge.revokePhone(requiredString(body, "phoneDeviceId"));
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end('{"revoked":true}');
+    }).catch((error) => response.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })));
+    return;
+  }
   if (request.method === "POST" && request.url === "/admin/pair") {
     if (request.headers["x-cchat-cli"] !== "1" || request.headers.origin) {
       response.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: "CLI access required" }));
@@ -297,6 +325,19 @@ const server = createServer((request, response) => {
   createReadStream(filePath).pipe(response);
 });
 
+async function readLocalJson(request: import("node:http").IncomingMessage): Promise<JsonObject> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 4096) throw new Error("Request too large");
+    chunks.push(chunk);
+  }
+  const value = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("JSON object required");
+  return value as JsonObject;
+}
+
 server.on("error", (error: NodeJS.ErrnoException) => {
   if (error.code === "EADDRINUSE") {
     console.error(`cchat is already running, or ${HOST}:${PORT} is used by another process.`);
@@ -323,26 +364,32 @@ websocketServer.on("connection", (socket, request) => {
     try {
       request = JSON.parse(raw.toString()) as JsonObject;
       const requestId = String(request.requestId ?? "");
-      let result: unknown;
-      switch (request.type) {
-        case "threads.list": result = await codex.listThreads(); break;
-        case "thread.open": result = await codex.openThread(requiredString(request, "threadId")); break;
-        case "thread.create": result = await codex.createThread(optionalString(request, "cwd")); break;
-        case "turn.start": result = await codex.startTurn(requiredString(request, "threadId"), requiredString(request, "text")); break;
-        case "turn.steer": result = await codex.steerTurn(requiredString(request, "threadId"), requiredString(request, "turnId"), requiredString(request, "text")); break;
-        case "turn.interrupt": result = await codex.interruptTurn(requiredString(request, "threadId"), requiredString(request, "turnId")); break;
-        case "approval.resolve":
-          codex.resolveApproval(requiredString(request, "approvalId"), approvalDecision(request.decision));
-          result = {};
-          break;
-        default: throw new Error("Unsupported bridge request");
-      }
+      const result = await handleCodexAction(request, "local");
       send(socket, { type: "response", requestId, result });
     } catch (error) {
       send(socket, { type: "response", requestId: String(request?.requestId ?? ""), error: error instanceof Error ? error.message : String(error) });
     }
   });
 });
+
+async function handleCodexAction(request: JsonObject, source: "local" | "remote"): Promise<unknown> {
+  switch (request.type) {
+    case "threads.list": return codex.listThreads();
+    case "thread.open": return codex.openThread(requiredString(request, "threadId"));
+    case "thread.create": return codex.createThread(optionalString(request, "cwd"));
+    case "turn.start": return codex.startTurn(requiredString(request, "threadId"), requiredString(request, "text"));
+    case "turn.steer": return codex.steerTurn(requiredString(request, "threadId"), requiredString(request, "turnId"), requiredString(request, "text"));
+    case "turn.interrupt": return codex.interruptTurn(requiredString(request, "threadId"), requiredString(request, "turnId"));
+    case "approval.resolve":
+      codex.resolveApproval(
+        requiredString(request, "approvalId"),
+        approvalDecision(request.decision),
+        source === "remote" ? requiredString(request, "actionDigest") : undefined,
+      );
+      return {};
+    default: throw new Error("Unsupported bridge request");
+  }
+}
 
 function requiredString(object: JsonObject, key: string): string {
   const value = object[key];

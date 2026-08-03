@@ -2,9 +2,9 @@
 
 ## Status
 
-This document describes work in progress. The localhost UI is functional, but
-the encrypted relay path is not yet connected to it and must not be deployed as
-a public service.
+This document describes the balanced web security architecture. The phone and
+home bridge authenticate an end-to-end encrypted channel; the relay routes
+opaque frames and never authorizes Codex actions.
 
 ## Trust boundaries
 
@@ -29,8 +29,8 @@ There is no public signup and no username or password.
 5. The bridge verifies the proof and registers the phone public key through its
    authenticated relay connection.
 6. The invitation is consumed exactly once.
-7. The phone registers a WebAuthn platform credential using a separate,
-   two-minute enrollment authorization with user verification
+7. Over the authenticated encrypted channel, the home bridge issues and
+   verifies WebAuthn registration with user verification
    required. On iPhone this normally invokes Face ID or the device passcode.
 
 The pairing token is not a durable credential. The relay stores only its
@@ -61,8 +61,9 @@ requires independent protocol and implementation review before production use.
 
 WebAuthn and E2E identity keys have different purposes:
 
-- WebAuthn proves that the person using the paired browser completed local user
-  verification.
+- WebAuthn proves to the home bridge that the person using the paired browser
+  completed local user verification. The relay never receives WebAuthn
+  credentials, challenges, assertions, or session tokens.
 - The phone identity key proves possession of the paired cchat device identity.
   Its private `CryptoKey` is non-exportable and stored by IndexedDB only after
   WebAuthn registration succeeds. Same-origin JavaScript can request signatures
@@ -71,8 +72,9 @@ WebAuthn and E2E identity keys have different purposes:
 
 A synced passkey alone is not treated as the E2E device identity. A connection
 must satisfy relay session authorization and the encrypted device handshake.
-Successful WebAuthn authentication creates a short-lived 15-minute relay
-session held in browser `sessionStorage`; it is not a durable device secret.
+Successful WebAuthn authentication unlocks only that encrypted channel for 15
+minutes. Leaving the page in the background for five minutes closes the channel
+and a reconnect starts locked.
 
 ## Relay database
 
@@ -81,7 +83,6 @@ SQLite stores only:
 - installation identity records;
 - paired device public records and revocation state;
 - short-lived pairing invitation hashes;
-- WebAuthn credential public keys and counters;
 - configuration state; and
 - metadata-only audit events.
 
@@ -96,6 +97,18 @@ paths, or approvals. Conversation history remains in Codex storage on Ubuntu.
 - Persistent session-wide approval is excluded from the initial release.
 - High-risk approvals will require a fresh WebAuthn assertion bound to the exact
   action digest.
+- Approval authorizations expire after 60 seconds and are consumed once.
+- The bridge checks the digest again against the still-pending Codex approval.
+
+## Balanced authorization policy
+
+- Ordinary reads and prompts require an active 15-minute Face ID session.
+- Every command or file-change approval requires a fresh Face ID assertion.
+- The assertion challenge is associated with the SHA-256 digest of the exact
+  pending approval; substitution, reuse, and expiration fail closed.
+- Unknown Codex approval types are rejected by the bridge.
+- Device revocation removes both the relay route and bridge-held identity and
+  passkey records, then invalidates active channels.
 
 ## Operational requirements
 
