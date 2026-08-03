@@ -13,20 +13,25 @@
     "typecheck": "tsc --noEmit",
     "check:browser": "node --check public/app.js",
     "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs",
-    "check": "npm run typecheck && npm run check:browser && npm run check:scripts",
+    "test": "node --test src/**/*.test.ts",
+    "check": "npm run typecheck && npm run check:browser && npm run check:scripts && npm test",
     "service:install": "node scripts/install-user-service.mjs",
     "service:uninstall": "node scripts/uninstall-user-service.mjs",
     "service:status": "systemctl --user status cchat.service"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "dependencies": {
+    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/server": "^13.3.2",
+    "libsodium-wrappers-sumo": "^0.8.4",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.12",
     "typescript": "^5.9.0"
   }
 }

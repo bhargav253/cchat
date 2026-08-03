@@ -89,6 +89,11 @@ The prototype currently lacks several CLI conveniences: slash commands, attachme
 
 The secure relay, device pairing, Face ID/WebAuthn, and end-to-end encryption layers are planned but not yet implemented. Do not expose the current prototype beyond localhost.
 
+The protocol and relay security work is tracked in
+[docs/security-design.md](docs/security-design.md). Cryptographic primitives and
+control-plane storage have automated tests, but are not yet connected to the
+browser/bridge data path.
+
 ## License
 
 MIT
