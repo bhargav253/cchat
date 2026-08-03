@@ -25,6 +25,16 @@ function systemdQuote(value) {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%")}"`;
 }
 
+function systemdPath(value) {
+  // Path-valued directives do not strip quotes the same way command lines do.
+  // Escape whitespace and specifier markers instead of quoting the whole path.
+  return value
+    .replaceAll("\\", "\\x5c")
+    .replaceAll(" ", "\\x20")
+    .replaceAll("\t", "\\x09")
+    .replaceAll("%", "%%");
+}
+
 const unit = `[Unit]
 Description=cchat local Codex bridge
 Documentation=https://github.com/OWNER/cchat
@@ -33,7 +43,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${systemdQuote(projectDir)}
+WorkingDirectory=${systemdPath(projectDir)}
 ExecStart=${systemdQuote(process.execPath)} ${systemdQuote(join(projectDir, "src", "server.ts"))}
 Environment="NODE_ENV=production"
 Environment=${systemdQuote(`PATH=${servicePath}`)}
