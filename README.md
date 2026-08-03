@@ -97,6 +97,26 @@ browser/bridge data path.
 The locked staging deployment for `mycchat.win` is documented in
 [docs/deployment.md](docs/deployment.md).
 
+## Pair a phone
+
+After deploying the relay, claim it once using its bootstrap token:
+
+```bash
+npm run bridge:claim -- <one-time-bootstrap-token>
+systemctl --user restart cchat.service
+```
+
+Then create a five-minute, single-use QR code:
+
+```bash
+npm run pair
+```
+
+The pairing secret is carried in the URL fragment, removed from the phone's
+address bar immediately, and verified by the home bridge rather than the relay.
+Face ID/passkey registration and encrypted Codex message routing are the next
+implementation milestone.
+
 ## License
 
 MIT

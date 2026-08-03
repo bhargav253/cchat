@@ -113,6 +113,7 @@ export class RelayDatabase {
     installationId: string;
     bridgeDeviceId: string;
     bridgeIdentityPublicKey: string;
+    bridgeAccessToken: string;
     now?: number;
   }): void {
     validateId(params.installationId, "installationId");
@@ -131,6 +132,9 @@ export class RelayDatabase {
         INSERT INTO devices (id, installation_id, kind, name, identity_public_key, created_at)
         VALUES (?, ?, 'bridge', 'Ubuntu bridge', ?, ?)
       `).run(params.bridgeDeviceId, params.installationId, params.bridgeIdentityPublicKey, now);
+      validateSecret(params.bridgeAccessToken);
+      this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+        .run(`bridge_access_token_hash:${params.installationId}`, hashSecret(params.bridgeAccessToken));
       this.db.prepare("DELETE FROM settings WHERE key = 'bootstrap_token_hash'").run();
       this.addAudit("installation.claimed", params.bridgeDeviceId, params.bridgeDeviceId, "success", {}, now);
       this.db.exec("COMMIT");
@@ -138,6 +142,14 @@ export class RelayDatabase {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  authenticateBridge(installationId: string, bridgeDeviceId: string, rawAccessToken: string): DeviceRecord | null {
+    const device = this.getDevice(bridgeDeviceId);
+    if (!device || device.kind !== "bridge" || device.installationId !== installationId || device.revokedAt !== null) return null;
+    const row = this.db.prepare("SELECT value FROM settings WHERE key = ?")
+      .get(`bridge_access_token_hash:${installationId}`) as { value: string } | undefined;
+    return row && secretMatches(rawAccessToken, row.value) ? device : null;
   }
 
   createPairingInvitation(params: {
@@ -156,6 +168,58 @@ export class RelayDatabase {
       INSERT INTO pairing_invitations (id, installation_id, token_hash, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(params.id, params.installationId, params.tokenHash, now, params.expiresAt);
+  }
+
+  getPairingInvitation(id: string): {
+    id: string;
+    installationId: string;
+    bridgeDeviceId: string;
+    bridgeIdentityPublicKey: string;
+    expiresAt: number;
+    usedAt: number | null;
+  } | null {
+    const row = this.db.prepare(`
+      SELECT p.id, p.installation_id, p.expires_at, p.used_at,
+             i.bridge_device_id, i.bridge_identity_public_key
+      FROM pairing_invitations p
+      JOIN installations i ON i.id = p.installation_id
+      WHERE p.id = ?
+    `).get(id) as Record<string, unknown> | undefined;
+    return row ? {
+      id: String(row.id),
+      installationId: String(row.installation_id),
+      bridgeDeviceId: String(row.bridge_device_id),
+      bridgeIdentityPublicKey: String(row.bridge_identity_public_key),
+      expiresAt: Number(row.expires_at),
+      usedAt: row.used_at === null ? null : Number(row.used_at),
+    } : null;
+  }
+
+  completePairing(params: {
+    invitationId: string;
+    installationId: string;
+    phoneDeviceId: string;
+    phoneName: string;
+    phoneIdentityPublicKey: string;
+    now?: number;
+  }): void {
+    const now = params.now ?? Date.now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.consumePairingInvitation({ id: params.invitationId, installationId: params.installationId, now });
+      this.registerPhone({
+        id: params.phoneDeviceId,
+        installationId: params.installationId,
+        name: params.phoneName,
+        identityPublicKey: params.phoneIdentityPublicKey,
+        now,
+      });
+      this.addAudit("device.paired", params.phoneDeviceId, params.phoneDeviceId, "success", {}, now);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   consumePairingInvitation(params: {

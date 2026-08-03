@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#11120f">
+    <title>Pair phone · cchat</title>
+    <link rel="stylesheet" href="/relay.css">
+    <script type="module" src="/pair.js"></script>
+  </head>
+  <body>
+    <main>
+      <div class="mark">c</div>
+      <p class="eyebrow">ONE-TIME DEVICE PAIRING</p>
+      <h1>Pair this phone</h1>
+      <p class="copy">The identity key is created on this device. Its private half is never sent to the relay.</p>
+      <label for="device-name">Device name</label>
+      <input id="device-name" maxlength="80" value="My phone" autocomplete="off">
+      <button id="pair-button" disabled>Pair securely</button>
+      <p id="pair-status" class="pair-status">Checking invitation…</p>
+    </main>
+  </body>
+</html>

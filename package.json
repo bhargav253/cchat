@@ -12,12 +12,15 @@
     "start": "node src/server.ts",
     "typecheck": "tsc --noEmit",
     "check:browser": "node --check public/app.js",
-    "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs && node --check scripts/init-relay.mjs",
+    "build:relay-client": "esbuild src/browser/pair.ts --bundle --format=esm --platform=browser --target=safari17 --outfile=relay-public/pair.js",
+    "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs && node --check scripts/init-relay.mjs && node --check scripts/claim-bridge.mjs && node --check scripts/create-pairing.mjs",
     "test": "node --test src/**/*.test.ts",
-    "check": "npm run typecheck && npm run check:browser && npm run check:scripts && npm test",
+    "check": "npm run typecheck && npm run build:relay-client && npm run check:browser && npm run check:scripts && npm test",
     "service:install": "node scripts/install-user-service.mjs",
     "service:uninstall": "node scripts/uninstall-user-service.mjs",
     "service:status": "systemctl --user status cchat.service",
+    "bridge:claim": "node scripts/claim-bridge.mjs",
+    "pair": "node scripts/create-pairing.mjs",
     "relay:init": "node scripts/init-relay.mjs",
     "relay:start": "node src/relay/server.ts"
   },
@@ -28,10 +31,12 @@
     "@simplewebauthn/browser": "^13.3.0",
     "@simplewebauthn/server": "^13.3.2",
     "libsodium-wrappers-sumo": "^0.8.4",
+    "qrcode": "^1.5.4",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.12",
     "typescript": "^5.9.0"

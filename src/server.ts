@@ -6,6 +6,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
+import { loadRemoteConfig, RemoteBridge } from "./bridge/remote.ts";
 
 type JsonObject = Record<string, unknown>;
 type Pending = {
@@ -20,6 +21,8 @@ const CODEX_MODE = process.env.CCHAT_CODEX_MODE ?? "shared";
 const CODEX_URL = process.env.CCHAT_CODEX_URL ?? "ws://127.0.0.1:4500";
 const CODEX_BIN = process.env.CCHAT_CODEX_BIN ?? "codex";
 const publicDir = fileURLToPath(new URL("../public", import.meta.url));
+const remoteConfig = await loadRemoteConfig();
+const remoteBridge = remoteConfig ? new RemoteBridge(remoteConfig) : null;
 
 class CodexAppServer {
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -257,6 +260,26 @@ const mimeTypes: Record<string, string> = {
 };
 
 const server = createServer((request, response) => {
+  if (request.method === "POST" && request.url === "/admin/pair") {
+    if (request.headers["x-cchat-cli"] !== "1" || request.headers.origin) {
+      response.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: "CLI access required" }));
+      return;
+    }
+    if (!remoteBridge) {
+      response.writeHead(409, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: "Bridge has not claimed a relay" }));
+      return;
+    }
+    void remoteBridge.createInvitation().then((result) => {
+      response.writeHead(201, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(result));
+    }).catch((error) => {
+      response.writeHead(502, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+    });
+    return;
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    response.writeHead(405, { Allow: "GET, HEAD, POST" }).end();
+    return;
+  }
   const requested = request.url === "/" ? "/index.html" : (request.url ?? "/index.html").split("?")[0]!;
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
   const filePath = join(publicDir, safePath);
@@ -338,14 +361,17 @@ function approvalDecision(value: unknown): "accept" | "decline" | "cancel" {
 }
 
 await codex.start();
+remoteBridge?.start();
 server.listen(PORT, HOST, () => {
   console.log(`cchat local prototype: http://${HOST}:${PORT}`);
   console.log(`Codex working directory: ${DEFAULT_CWD}`);
   console.log(`Codex connection: ${CODEX_MODE === "shared" ? `shared localhost server (${CODEX_URL})` : "private stdio process"}`);
   if (CODEX_MODE === "shared") console.log(`CLI command: codex --remote ${CODEX_URL}`);
+  console.log(`Remote relay: ${remoteConfig ? remoteConfig.relayOrigin : "not claimed"}`);
 });
 
 function shutdown(): void {
+  remoteBridge?.stop();
   codex.stop();
   for (const socket of sockets) socket.terminate();
   websocketServer.close();

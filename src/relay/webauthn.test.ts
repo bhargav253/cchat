@@ -15,6 +15,7 @@ test("Face ID registration options require user verification and an active paire
     installationId: "installation_01",
     bridgeDeviceId: "bridge_device_01",
     bridgeIdentityPublicKey: bridge.publicKey,
+    bridgeAccessToken: "bridge-access-token-with-at-least-thirty-two-characters",
   });
   database.registerPhone({
     id: "phone_device_01",

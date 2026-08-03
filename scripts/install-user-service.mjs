@@ -37,7 +37,7 @@ function systemdPath(value) {
 
 const unit = `[Unit]
 Description=cchat local Codex bridge
-Documentation=https://github.com/OWNER/cchat
+Documentation=https://github.com/bhargav253/cchat
 After=network-online.target
 Wants=network-online.target
 

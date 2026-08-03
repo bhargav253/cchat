@@ -14,6 +14,7 @@ test("relay database stores control-plane records and no transcript tables", asy
     installationId: "installation_01",
     bridgeDeviceId: "bridge_device_01",
     bridgeIdentityPublicKey: bridge.publicKey,
+    bridgeAccessToken: "bridge-access-token-with-at-least-thirty-two-characters",
     now: 1_000,
   });
   assert.throws(() => database.claimInstallation({
@@ -21,6 +22,7 @@ test("relay database stores control-plane records and no transcript tables", asy
     installationId: "installation_02",
     bridgeDeviceId: "bridge_device_02",
     bridgeIdentityPublicKey: bridge.publicKey,
+    bridgeAccessToken: "bridge-access-token-with-at-least-thirty-two-characters",
   }), /already-used/);
 
   const tables = database.tableNames();
@@ -48,6 +50,7 @@ test("pairing invitations are short-lived and single use", async () => {
     installationId: "installation_01",
     bridgeDeviceId: "bridge_device_01",
     bridgeIdentityPublicKey: bridge.publicKey,
+    bridgeAccessToken: "bridge-access-token-with-at-least-thirty-two-characters",
     now: 1_000,
   });
   database.createPairingInvitation({

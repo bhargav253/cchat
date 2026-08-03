@@ -8,3 +8,10 @@ h1 { margin: 10px 0; font-size: clamp(28px, 7vw, 42px); letter-spacing: -.04em; 
 .copy { color: #a5a79a; line-height: 1.65; }
 .status { display: inline-flex; align-items: center; gap: 8px; margin-top: 22px; border: 1px solid #30342a; background: #181a16; border-radius: 100px; padding: 9px 13px; color: #a5a79a; font-size: 11px; }
 .status span { width: 7px; height: 7px; border-radius: 50%; background: #8be061; box-shadow: 0 0 10px #8be061; }
+label { display: block; margin: 24px auto 7px; width: min(330px, 100%); text-align: left; color: #a5a79a; font-size: 12px; }
+input, button { width: min(330px, 100%); border-radius: 12px; font: inherit; }
+input { border: 1px solid #3a3d33; background: #181a16; color: #eeeede; padding: 13px 14px; }
+button { margin-top: 12px; border: 0; background: #d9ff72; color: #11120f; padding: 13px 15px; font-weight: 800; cursor: pointer; }
+button:disabled { opacity: .45; cursor: default; }
+.pair-status { min-height: 42px; color: #a5a79a; font-size: 12px; line-height: 1.5; }
+.pair-status.error { color: #ff958f; }
