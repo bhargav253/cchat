@@ -12,7 +12,7 @@
     "start": "node src/server.ts",
     "typecheck": "tsc --noEmit",
     "check:browser": "node --check public/app.js",
-    "build:relay-client": "esbuild src/browser/pair.ts --bundle --format=esm --platform=browser --target=safari17 --outfile=relay-public/pair.js",
+    "build:relay-client": "esbuild src/browser/pair.ts src/browser/relay-home.ts --bundle --format=esm --platform=browser --target=safari17 --outdir=relay-public",
     "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs && node --check scripts/init-relay.mjs && node --check scripts/claim-bridge.mjs && node --check scripts/create-pairing.mjs && node -e \"import('./src/bridge/remote.ts')\"",
     "test": "node --test src/**/*.test.ts",
     "check": "npm run typecheck && npm run build:relay-client && npm run check:browser && npm run check:scripts && npm test",

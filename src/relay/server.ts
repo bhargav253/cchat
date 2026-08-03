@@ -1,10 +1,12 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RelayDatabase } from "./database.ts";
 import { WebSocket, WebSocketServer } from "ws";
+import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
+import { WebAuthnService } from "./webauthn.ts";
 
 const HOST = process.env.CCHAT_RELAY_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.CCHAT_RELAY_PORT ?? 8787);
@@ -17,6 +19,13 @@ if (HOST !== "127.0.0.1" && HOST !== "::1") throw new Error("Relay must remain l
 if (!Number.isInteger(PORT) || PORT < 1024 || PORT > 65535) throw new Error("Invalid relay port");
 
 const database = new RelayDatabase(DATABASE_PATH);
+const webauthn = new WebAuthnService(database, {
+  rpName: "cchat",
+  rpID: new URL(PUBLIC_ORIGIN).hostname,
+  expectedOrigin: PUBLIC_ORIGIN,
+});
+const enrollmentTokens = new Map<string, { deviceId: string; expiresAt: number }>();
+const authenticatedSessions = new Map<string, { deviceId: string; expiresAt: number }>();
 database.purgeExpired();
 const cleanup = setInterval(() => database.purgeExpired(), 60 * 60_000);
 cleanup.unref();
@@ -28,7 +37,7 @@ const mimeTypes: Record<string, string> = {
 };
 
 const server = createServer((request, response) => {
-  response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
+  response.setHeader("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'");
   response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
@@ -68,6 +77,41 @@ const server = createServer((request, response) => {
         expiresAt: Date.now() + 5 * 60_000,
       });
       json(response, 201, { expiresAt: Date.now() + 5 * 60_000 });
+    }).catch((error) => jsonError(response, error));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/api/v1/webauthn/register/options") {
+    void readJson(request).then(async (body) => {
+      const deviceId = requiredString(body, "deviceId");
+      requireEnrollment(request.headers.authorization, deviceId, false);
+      json(response, 200, await webauthn.registrationOptions(deviceId));
+    }).catch((error) => jsonError(response, error));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/api/v1/webauthn/register/verify") {
+    void readJson(request).then(async (body) => {
+      const deviceId = requiredString(body, "deviceId");
+      const token = requireEnrollment(request.headers.authorization, deviceId, false);
+      await webauthn.verifyRegistration(deviceId, objectValue(body, "response") as unknown as RegistrationResponseJSON);
+      enrollmentTokens.delete(token);
+      json(response, 200, { verified: true });
+    }).catch((error) => jsonError(response, error));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/api/v1/webauthn/authenticate/options") {
+    void readJson(request).then(async (body) => {
+      json(response, 200, await webauthn.authenticationOptions(requiredString(body, "deviceId")));
+    }).catch((error) => jsonError(response, error));
+    return;
+  }
+  if (request.method === "POST" && request.url === "/api/v1/webauthn/authenticate/verify") {
+    void readJson(request).then(async (body) => {
+      const deviceId = requiredString(body, "deviceId");
+      await webauthn.verifyAuthentication(deviceId, objectValue(body, "response") as unknown as AuthenticationResponseJSON);
+      const sessionToken = randomBytes(32).toString("base64url");
+      const expiresAt = Date.now() + 15 * 60_000;
+      authenticatedSessions.set(sessionToken, { deviceId, expiresAt });
+      json(response, 200, { verified: true, sessionToken, expiresAt });
     }).catch((error) => jsonError(response, error));
     return;
   }
@@ -176,11 +220,14 @@ function handleBridgeMessage(installationId: string, bridgeDeviceId: string, raw
       phoneIdentityPublicKey: requiredString(message, "phoneIdentityPublicKey"),
     });
     database.touchDevice(bridgeDeviceId);
+    const enrollmentToken = randomBytes(32).toString("base64url");
+    enrollmentTokens.set(enrollmentToken, { deviceId: requiredString(message, "phoneDeviceId"), expiresAt: Date.now() + 2 * 60_000 });
     send(phone, {
       type: "pairing.complete",
       installationId,
       bridgeDeviceId,
       phoneDeviceId: message.phoneDeviceId,
+      enrollmentToken,
     });
     phone.close(1000, "Pairing complete");
   } catch (error) {
@@ -229,6 +276,18 @@ function authenticateBridgeRequest(authorization: string | undefined, installati
   if (!match || !database.authenticateBridge(installationId, bridgeDeviceId, match[1]!)) throw new Error("Bridge authentication failed");
 }
 
+function requireEnrollment(authorization: string | undefined, deviceId: string, consume: boolean): string {
+  const match = authorization?.match(/^Bearer ([A-Za-z0-9_-]{32,1024})$/);
+  const token = match?.[1];
+  const enrollment = token ? enrollmentTokens.get(token) : undefined;
+  if (!token || !enrollment || enrollment.deviceId !== deviceId || enrollment.expiresAt < Date.now()) {
+    if (token) enrollmentTokens.delete(token);
+    throw new Error("Enrollment authorization is invalid or expired");
+  }
+  if (consume) enrollmentTokens.delete(token);
+  return token;
+}
+
 async function readJson(request: import("node:http").IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -264,5 +323,5 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 
 function jsonError(response: ServerResponse, error: unknown): void {
   const message = error instanceof Error ? error.message : "Request failed";
-  json(response, /bootstrap|authentication/i.test(message) ? 401 : 400, { error: message });
+  json(response, /bootstrap|authentication|authorization/i.test(message) ? 401 : 400, { error: message });
 }

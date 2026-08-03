@@ -68,7 +68,20 @@ test("relay pairs a phone only after the authenticated bridge approves its proof
     type: "pairing.approve", connectionId: routed.connectionId, invitationId,
     phoneDeviceId, phoneIdentityPublicKey: phoneIdentity.publicKey, name: "Test phone",
   }));
-  assert.equal((await nextMessage(phone)).type, "pairing.complete");
+  const complete = await nextMessage(phone);
+  assert.equal(complete.type, "pairing.complete");
+  const unauthorizedOptions = await fetch(`http://127.0.0.1:${port}/api/v1/webauthn/register/options`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: phoneDeviceId }),
+  });
+  assert.equal(unauthorizedOptions.status, 401);
+  const optionsResponse = await fetch(`http://127.0.0.1:${port}/api/v1/webauthn/register/options`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${String(complete.enrollmentToken)}` },
+    body: JSON.stringify({ deviceId: phoneDeviceId }),
+  });
+  assert.equal(optionsResponse.status, 200);
+  const options = await optionsResponse.json() as Record<string, unknown>;
+  assert.equal((options.authenticatorSelection as Record<string, unknown>).userVerification, "required");
   bridge.close();
 
   const check = new RelayDatabase(databasePath);

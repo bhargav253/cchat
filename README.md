@@ -1,11 +1,13 @@
 # cchat
 
-> **Security status:** experimental localhost prototype. Do not expose this
-> revision to the internet or a shared network.
+> **Security status:** experimental. The public relay supports secure device
+> pairing and passkeys, but encrypted Codex routing is not enabled yet.
 
 cchat is a local-first companion UI for existing Codex sessions. The current repository contains a Phase 0 localhost prototype: a small TypeScript bridge hosts Codex App Server on a loopback-only WebSocket and presents a mobile-friendly browser UI.
 
-The prototype does **not** yet include the Linode relay, authentication, device pairing, or end-to-end encryption. It binds to localhost by default and should not be exposed to a network.
+The local Codex bridge remains loopback-only. The Linode relay supports
+single-use pairing and Face ID/passkey authentication, but does not yet forward
+Codex traffic.
 
 ## Requirements
 
@@ -87,7 +89,9 @@ cchat is a client of the same Codex App Server protocol, not another AI agent. C
 
 The prototype currently lacks several CLI conveniences: slash commands, attachments, rich terminal interaction, plan controls, model/effort selection, search, and complete handling for every tool or elicitation type. Those gaps will be evaluated before the relay is built.
 
-The secure relay, device pairing, Face ID/WebAuthn, and end-to-end encryption layers are planned but not yet implemented. Do not expose the current prototype beyond localhost.
+The secure relay, device pairing, and Face ID/WebAuthn enrollment are connected.
+End-to-end encrypted Codex routing is the next milestone; never expose the local
+bridge directly to a network.
 
 The protocol and relay security work is tracked in
 [docs/security-design.md](docs/security-design.md). Cryptographic primitives and
@@ -114,8 +118,8 @@ npm run pair
 
 The pairing secret is carried in the URL fragment, removed from the phone's
 address bar immediately, and verified by the home bridge rather than the relay.
-Face ID/passkey registration and encrypted Codex message routing are the next
-implementation milestone.
+Successful pairing immediately registers a passkey with required user
+verification. Encrypted Codex message routing is the next milestone.
 
 ## License
 

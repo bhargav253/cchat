@@ -1,4 +1,5 @@
-import { createPairingRequest, generateIdentity } from "../security/e2ee.ts";
+import { startRegistration } from "@simplewebauthn/browser";
+import { createPairingProof, generateNonExportableIdentity } from "./device-identity.ts";
 
 type Invitation = {
   id: string;
@@ -30,9 +31,9 @@ async function pair(invitation: string, secret: string): Promise<void> {
     const metadataResponse = await fetch(`/api/v1/pairing/invitations/${encodeURIComponent(invitation)}`, { cache: "no-store" });
     if (!metadataResponse.ok) throw new Error(await responseError(metadataResponse));
     const metadata = await metadataResponse.json() as Invitation;
-    const identity = await generateIdentity();
+    const identity = await generateNonExportableIdentity();
     const phoneDeviceId = `phone_${crypto.randomUUID().replaceAll("-", "")}`;
-    const request = await createPairingRequest({
+    const request = await createPairingProof({
       pairingToken: secret,
       installationId: metadata.installationId,
       phoneDeviceId,
@@ -55,16 +56,21 @@ async function pair(invitation: string, secret: string): Promise<void> {
         if (message.type === "pairing.rejected") throw new Error(String(message.error ?? "Pairing rejected"));
         if (message.type !== "pairing.complete") return;
         window.clearTimeout(timeout);
+        const enrollmentToken = String(message.enrollmentToken ?? "");
+        if (!enrollmentToken) throw new Error("Relay did not authorize Face ID enrollment");
+        status.textContent = "Confirm Face ID to protect cchat access…";
+        await registerPasskey(phoneDeviceId, enrollmentToken);
         await saveDevice({
           version: 1,
           installationId: metadata.installationId,
           bridgeDeviceId: metadata.bridgeDeviceId,
           bridgeIdentityPublicKey: metadata.bridgeIdentityPublicKey,
           phoneDeviceId,
-          phoneIdentity: identity,
+          phoneIdentityPublicKey: identity.publicKey,
+          phoneIdentityPrivateKey: identity.privateKey,
         });
-        status.textContent = "Paired successfully. Face ID setup is the next step.";
-        button.textContent = "Paired";
+        status.textContent = "Paired and protected with Face ID.";
+        button.textContent = "Secured";
         socket.close(1000, "Complete");
       } catch (error) {
         fail(error instanceof Error ? error.message : String(error));
@@ -79,6 +85,19 @@ async function pair(invitation: string, secret: string): Promise<void> {
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
+}
+
+async function registerPasskey(deviceId: string, enrollmentToken: string): Promise<void> {
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${enrollmentToken}` };
+  const optionsResponse = await fetch("/api/v1/webauthn/register/options", {
+    method: "POST", headers, body: JSON.stringify({ deviceId }),
+  });
+  if (!optionsResponse.ok) throw new Error(await responseError(optionsResponse));
+  const registration = await startRegistration({ optionsJSON: await optionsResponse.json() });
+  const verifyResponse = await fetch("/api/v1/webauthn/register/verify", {
+    method: "POST", headers, body: JSON.stringify({ deviceId, response: registration }),
+  });
+  if (!verifyResponse.ok) throw new Error(await responseError(verifyResponse));
 }
 
 function saveDevice(value: unknown): Promise<void> {

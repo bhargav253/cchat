@@ -4,16 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#11120f">
-    <title>cchat · device not paired</title>
+    <title>cchat · private Codex companion</title>
     <link rel="stylesheet" href="/relay.css">
+    <script type="module" src="/relay-home.js"></script>
   </head>
   <body>
     <main>
       <div class="mark">c</div>
       <p class="eyebrow">PRIVATE CODEX COMPANION</p>
-      <h1>This device is not paired</h1>
-      <p class="copy">Open pairing from your cchat bridge and scan its one-time QR code to continue.</p>
-      <div class="status"><span></span> Relay available · no conversation data exposed</div>
+      <h1 id="home-title">Checking this device…</h1>
+      <p id="home-copy" class="copy">Loading local security state.</p>
+      <button id="unlock-button" hidden>Unlock with Face ID</button>
+      <div class="status"><span></span><span id="home-status">Relay available</span></div>
     </main>
   </body>
 </html>

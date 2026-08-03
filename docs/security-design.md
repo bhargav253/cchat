@@ -24,12 +24,13 @@ There is no public signup and no username or password.
    of ten minutes.
 2. A QR code binds the installation identifier, bridge identity public key,
    invitation identifier, and pairing token.
-3. The phone creates an Ed25519 identity key locally.
+3. The phone creates a non-exportable WebCrypto Ed25519 identity key locally.
 4. The phone authenticates the pairing transcript with the invitation token.
 5. The bridge verifies the proof and registers the phone public key through its
    authenticated relay connection.
 6. The invitation is consumed exactly once.
-7. The phone registers a WebAuthn platform credential with user verification
+7. The phone registers a WebAuthn platform credential using a separate,
+   two-minute enrollment authorization with user verification
    required. On iPhone this normally invokes Face ID or the device passcode.
 
 The pairing token is not a durable credential. The relay stores only its
@@ -63,10 +64,15 @@ WebAuthn and E2E identity keys have different purposes:
 - WebAuthn proves that the person using the paired browser completed local user
   verification.
 - The phone identity key proves possession of the paired cchat device identity.
+  Its private `CryptoKey` is non-exportable and stored by IndexedDB only after
+  WebAuthn registration succeeds. Same-origin JavaScript can request signatures
+  while running but cannot export the private key bytes.
 - Ephemeral X25519 keys provide fresh encryption keys for each connection.
 
 A synced passkey alone is not treated as the E2E device identity. A connection
 must satisfy relay session authorization and the encrypted device handshake.
+Successful WebAuthn authentication creates a short-lived 15-minute relay
+session held in browser `sessionStorage`; it is not a durable device secret.
 
 ## Relay database
 
