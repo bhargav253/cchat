@@ -1,0 +1,17 @@
+#!/bin/sh
+
+set -eu
+
+codex_url="${CCHAT_CODEX_URL:-ws://127.0.0.1:4500}"
+health_url="${codex_url#ws://}"
+health_url="http://${health_url}/readyz"
+
+if command -v curl >/dev/null 2>&1; then
+  if ! curl --fail --silent --show-error --max-time 2 "$health_url" >/dev/null; then
+    printf '%s\n' "cchat's shared Codex server is not ready at ${codex_url}." >&2
+    printf '%s\n' "Start it first with: npm start" >&2
+    exit 1
+  fi
+fi
+
+exec codex --remote "$codex_url" "$@"

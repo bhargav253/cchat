@@ -1,0 +1,32 @@
+{
+  "name": "cchat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first mobile companion for Codex sessions",
+  "type": "module",
+  "bin": {
+    "cchat-cli": "bin/cchat-cli"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "check:browser": "node --check public/app.js",
+    "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs",
+    "check": "npm run typecheck && npm run check:browser && npm run check:scripts",
+    "service:install": "node scripts/install-user-service.mjs",
+    "service:uninstall": "node scripts/uninstall-user-service.mjs",
+    "service:status": "systemctl --user status cchat.service"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.0"
+  }
+}
