@@ -2,34 +2,35 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#11120f">
-    <title>cchat · private Codex companion</title>
-    <link rel="stylesheet" href="/relay.css">
+    <title>cchat</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/relay-app.css">
     <script type="module" src="/relay-home.js"></script>
   </head>
   <body>
-    <main>
-      <div class="mark">c</div>
-      <p class="eyebrow">PRIVATE CODEX COMPANION</p>
-      <h1 id="home-title">Checking this device…</h1>
-      <p id="home-copy" class="copy">Loading local security state.</p>
-      <button id="unlock-button" hidden>Unlock with Face ID</button>
-      <div class="status"><span></span><span id="home-status">Relay available</span></div>
-      <section id="approval-panel" hidden>
-        <h2>Codex approval required</h2>
-        <pre id="approval-summary"></pre>
-        <div class="approval-actions">
-          <button data-decision="accept">Face ID and approve</button>
-          <button data-decision="decline" class="secondary">Face ID and decline</button>
-        </div>
-      </section>
-      <section id="chat-panel" hidden>
-        <div class="session-row"><select id="thread-select" aria-label="Codex session"></select><button id="refresh-threads" class="secondary">Refresh</button></div>
-        <section id="conversation-output" aria-live="polite"></section>
-        <textarea id="prompt-input" rows="4" placeholder="Message Codex"></textarea>
-        <div class="approval-actions"><button id="send-prompt">Send</button><button id="interrupt-turn" class="secondary">Interrupt</button></div>
-      </section>
-    </main>
+    <section class="security-gate" id="security-gate">
+      <div class="empty-mark">c</div><p class="gate-eyebrow">PRIVATE CODEX COMPANION</p>
+      <h1 id="home-title">Checking this device…</h1><p id="home-copy">Establishing a secure connection.</p>
+      <button id="unlock-button" class="gate-button" hidden>Unlock with Face ID</button>
+      <small id="home-status">Encrypted relay available</small>
+    </section>
+    <div class="app-shell hidden" id="app-shell">
+      <div class="drawer-scrim" id="drawer-scrim"></div>
+      <aside class="sidebar" id="sidebar">
+        <header class="brand-row"><div class="brand"><span class="mark">c</span>chat</div><button class="icon-button mobile-only" id="close-sidebar">×</button></header>
+        <button class="new-thread" id="new-thread">＋ New thread</button>
+        <div class="section-label">Recent sessions</div><nav class="thread-list" id="thread-list"></nav>
+        <footer class="bridge-card"><span class="status-dot online" id="status-dot"></span><div><strong id="status-label">Codex connected</strong><small id="status-detail">Encrypted home bridge</small></div></footer>
+      </aside>
+      <main class="conversation">
+        <header class="topbar"><button class="icon-button mobile-only" id="open-sidebar">☰</button><div class="thread-heading"><strong id="thread-title">Choose a session</strong><span id="thread-meta">End-to-end encrypted</span></div><span class="prototype-pill">PRIVATE RELAY</span></header>
+        <section class="empty-state" id="empty-state"><div class="empty-mark">c</div><h1>Your Codex sessions, on your phone</h1><p>Select an existing session or create one. Codex still runs on your workstation.</p></section>
+        <section class="messages hidden" id="messages"></section><section class="approval-tray" id="approval-tray"></section>
+        <footer class="composer-area"><form class="composer" id="composer"><textarea id="prompt" rows="1" placeholder="Message Codex…" disabled></textarea><div class="composer-footer"><span class="hint" id="composer-hint">Select a session to begin</span><div class="composer-actions"><button type="button" class="stop-button hidden" id="stop-turn">■ Stop</button><button type="submit" class="send-button" id="send" disabled>↑</button></div></div></form><small class="disclaimer">End-to-end encrypted · Codex runs on your workstation</small></footer>
+      </main>
+    </div>
+    <dialog id="new-thread-dialog"><form method="dialog" id="new-thread-form"><h2>Start a Codex thread</h2><label for="cwd">Working directory</label><input id="cwd" autocomplete="off" required><div class="dialog-actions"><button value="cancel">Cancel</button><button value="create" class="primary">Create thread</button></div></form></dialog>
   </body>
 </html>

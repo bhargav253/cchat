@@ -1,281 +1,98 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { EncryptedTransport, loadDevice } from "./encrypted-transport.ts";
 
-const title = document.querySelector<HTMLElement>("#home-title")!;
-const copy = document.querySelector<HTMLElement>("#home-copy")!;
-const button = document.querySelector<HTMLButtonElement>("#unlock-button")!;
-const status = document.querySelector<HTMLElement>("#home-status")!;
-const approvalPanel = document.querySelector<HTMLElement>("#approval-panel")!;
-const approvalSummary = document.querySelector<HTMLElement>("#approval-summary")!;
-const chatPanel = document.querySelector<HTMLElement>("#chat-panel")!;
-const threadSelect = document.querySelector<HTMLSelectElement>("#thread-select")!;
-const output = document.querySelector<HTMLElement>("#conversation-output")!;
-const promptInput = document.querySelector<HTMLTextAreaElement>("#prompt-input")!;
-let activeThreadId = "";
-let activeTurnId = "";
-const renderedItems = new Map<string, HTMLElement>();
+type Obj = Record<string, unknown>;
+const byId = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const el = {
+  gate: byId("security-gate"), shell: byId("app-shell"), title: byId("home-title"), copy: byId("home-copy"), gateStatus: byId("home-status"), unlock: byId<HTMLButtonElement>("unlock-button"),
+  sidebar: byId("sidebar"), scrim: byId("drawer-scrim"), threadList: byId("thread-list"), threadTitle: byId("thread-title"), threadMeta: byId("thread-meta"),
+  empty: byId("empty-state"), messages: byId("messages"), approvals: byId("approval-tray"), prompt: byId<HTMLTextAreaElement>("prompt"), composer: byId<HTMLFormElement>("composer"),
+  send: byId<HTMLButtonElement>("send"), stop: byId<HTMLButtonElement>("stop-turn"), hint: byId("composer-hint"), status: byId("status-detail"), cwd: byId<HTMLInputElement>("cwd"), dialog: byId<HTMLDialogElement>("new-thread-dialog"),
+};
 let transport: EncryptedTransport | null = null;
-let backgroundTimer: number | null = null;
-let sessionTimer: number | null = null;
+let threads: Obj[] = [], thread: Obj | null = null, activeTurnId = "";
+let backgroundTimer: number | null = null, sessionTimer: number | null = null;
+const items = new Map<string, HTMLElement>();
 
-const device = await loadDevice();
-if (!device) {
-  title.textContent = "This device is not paired";
-  copy.textContent = "Pairing will be enabled after the complete security validation is finished.";
-  status.textContent = "Relay available · no conversation data exposed";
-} else {
+await initialize();
+
+async function initialize() {
+  const device = await loadDevice();
+  if (!device) { el.title.textContent = "This device is not paired"; el.copy.textContent = "Create a one-time QR code from your home bridge."; return; }
   try {
-    status.textContent = "Establishing encrypted connection to your home bridge…";
+    el.gateStatus.textContent = "Establishing encrypted connection…";
     transport = new EncryptedTransport(device);
-    transport.onClose(() => {
-      transport = null;
-      chatPanel.hidden = true;
-      title.textContent = "Connection closed";
-      copy.textContent = "Reload and use Face ID to establish a new encrypted channel.";
-      status.textContent = "Encrypted connection closed";
-    });
+    transport.onEvent(handleEvent);
+    transport.onClose(showDisconnected);
     await transport.connect();
-    transport.onEvent(handleEncryptedEvent);
-    const auth = await transport.request("auth.status") as { registered: boolean; authenticatedUntil: number };
-    if (!auth.registered) await registerPasskey();
-    else showLocked();
-  } catch (error) { fail(error); }
+    const auth = await transport.request("auth.status") as { registered: boolean };
+    if (!auth.registered) await registerPasskey(); else showLocked();
+  } catch (error) { gateError(error); }
 }
 
-function handleEncryptedEvent(event: Record<string, unknown>): void {
-  if (event.type === "codex.event") {
-    const params = (event.params ?? {}) as Record<string, unknown>;
-    if (params.threadId && activeThreadId && params.threadId !== activeThreadId) return;
-    const turn = params?.turn as Record<string, unknown> | undefined;
-    if (typeof turn?.id === "string") activeTurnId = turn.id;
-    handleCodexEvent(String(event.method ?? ""), params);
-  }
-  if (event.type !== "approval.requested") return;
-  const approvalId = String(event.requestId ?? "");
-  const actionDigest = String(event.actionDigest ?? "");
-  if (!approvalId || !actionDigest) return;
-  approvalSummary.textContent = JSON.stringify({ approvalType: event.approvalType, params: event.params }, null, 2);
-  approvalPanel.hidden = false;
-  for (const element of approvalPanel.querySelectorAll<HTMLButtonElement>("button[data-decision]")) {
-    element.onclick = () => void resolveApproval(approvalId, actionDigest, element.dataset.decision as "accept" | "decline");
-  }
-}
-
-async function resolveApproval(approvalId: string, actionDigest: string, decision: "accept" | "decline"): Promise<void> {
+async function registerPasskey() {
   if (!transport) return;
-  for (const element of approvalPanel.querySelectorAll<HTMLButtonElement>("button")) element.disabled = true;
-  try {
-    status.textContent = "Confirm this exact approval with Face ID…";
-    const options = await transport.request("auth.approval.options", { actionDigest });
-    const response = await startAuthentication({ optionsJSON: options as Parameters<typeof startAuthentication>[0]["optionsJSON"] });
-    await transport.request("auth.approval.verify", { response });
-    await transport.request("approval.resolve", { approvalId, actionDigest, decision });
-    approvalPanel.hidden = true;
-    status.textContent = `Approval ${decision === "accept" ? "accepted" : "declined"} after Face ID`;
-  } catch (error) {
-    fail(error);
-    for (const element of approvalPanel.querySelectorAll<HTMLButtonElement>("button")) element.disabled = false;
-  }
-}
-
-button.addEventListener("click", () => void unlock());
-document.querySelector("#refresh-threads")!.addEventListener("click", () => void loadThreads());
-threadSelect.addEventListener("change", () => void openThread(threadSelect.value));
-document.querySelector("#send-prompt")!.addEventListener("click", () => void sendMessage());
-document.querySelector("#interrupt-turn")!.addEventListener("click", () => void interrupt());
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    backgroundTimer = window.setTimeout(lock, 5 * 60_000);
-  } else if (backgroundTimer !== null) {
-    window.clearTimeout(backgroundTimer);
-    backgroundTimer = null;
-  }
-});
-
-async function registerPasskey(): Promise<void> {
-  if (!transport) return;
-  title.textContent = "Protect this phone";
-  copy.textContent = "Create a passkey verified directly by your home bridge.";
-  status.textContent = "Waiting for Face ID…";
+  el.title.textContent = "Protect this phone"; el.copy.textContent = "Create a passkey verified directly by your home bridge.";
   const options = await transport.request("auth.register.options");
   const response = await startRegistration({ optionsJSON: options as Parameters<typeof startRegistration>[0]["optionsJSON"] });
   const result = await transport.request("auth.register.verify", { response }) as { authenticatedUntil: number };
-  showUnlocked(result.authenticatedUntil);
+  showApp(result.authenticatedUntil);
 }
 
-async function unlock(): Promise<void> {
-  if (!transport) return;
-  button.disabled = true;
-  status.textContent = "Waiting for Face ID…";
+function showLocked() { el.title.textContent = "Unlock cchat"; el.copy.textContent = "Confirm with Face ID to open a 15-minute session."; el.unlock.hidden = false; el.gateStatus.textContent = "Encrypted connection · locked"; }
+el.unlock.onclick = async () => {
+  if (!transport) return location.reload();
+  el.unlock.disabled = true;
   try {
     const options = await transport.request("auth.authenticate.options");
     const response = await startAuthentication({ optionsJSON: options as Parameters<typeof startAuthentication>[0]["optionsJSON"] });
     const result = await transport.request("auth.authenticate.verify", { response }) as { authenticatedUntil: number };
-    showUnlocked(result.authenticatedUntil);
-  } catch (error) { fail(error); button.disabled = false; }
-}
+    showApp(result.authenticatedUntil);
+  } catch (error) { gateError(error); el.unlock.disabled = false; }
+};
 
-function showLocked(): void {
-  title.textContent = "Unlock cchat";
-  copy.textContent = "Confirm with Face ID to open a 15-minute bridge-authorized session.";
-  status.textContent = "Encrypted connection · locked";
-  button.hidden = false;
-  button.disabled = false;
-}
-
-function showUnlocked(expiresAt: number): void {
-  title.textContent = "cchat unlocked";
-  copy.textContent = "Your home bridge verified Face ID. Codex UI wiring is in progress.";
-  status.textContent = `Encrypted and authenticated until ${new Date(expiresAt).toLocaleTimeString()}`;
-  button.hidden = true;
-  chatPanel.hidden = false;
-  void loadThreads();
-  if (sessionTimer !== null) window.clearTimeout(sessionTimer);
+function showApp(expiresAt: number) {
+  el.gate.classList.add("hidden"); el.shell.classList.remove("hidden");
+  if (sessionTimer !== null) clearTimeout(sessionTimer);
   sessionTimer = window.setTimeout(lock, Math.max(0, expiresAt - Date.now()));
+  void refreshThreads();
 }
+function lock() { transport?.close(); transport = null; el.shell.classList.add("hidden"); el.gate.classList.remove("hidden"); el.title.textContent = "cchat locked"; el.copy.textContent = "Reload and use Face ID to reconnect."; el.unlock.hidden = true; }
+function showDisconnected() { transport = null; el.status.textContent = "Encrypted connection closed"; el.shell.classList.add("hidden"); el.gate.classList.remove("hidden"); el.title.textContent = "Connection closed"; el.copy.textContent = "Reload to establish a fresh encrypted channel."; el.unlock.hidden = true; }
 
-function lock(): void {
-  if (sessionTimer !== null) window.clearTimeout(sessionTimer);
-  sessionTimer = null;
-  transport?.close();
-  transport = null;
-  title.textContent = "cchat locked";
-  copy.textContent = "The encrypted channel closed after five minutes in the background. Reload to reconnect.";
-  status.textContent = "Locked";
-  button.hidden = true;
-  chatPanel.hidden = true;
+async function request(type: string, body: Obj = {}) { if (!transport) throw new Error("Bridge is disconnected"); return transport.request(type, body); }
+async function refreshThreads() { const result = await request("threads.list") as Obj; threads = (result.data ?? []) as Obj[]; renderThreads(); }
+function renderThreads() {
+  el.threadList.replaceChildren(...threads.map((t) => { const b=document.createElement("button"); b.className=`thread${thread?.id===t.id?" active":""}`; const s=document.createElement("strong"); s.textContent=String(t.name||firstLine(String(t.preview??""))||"Untitled session"); const d=document.createElement("small"); d.textContent=`${relativeTime(Number(t.recencyAt||t.updatedAt))} · ${shortPath(String(t.cwd??""))}`; b.append(s,d); b.onclick=()=>void openThread(String(t.id)); return b; }));
 }
+async function openThread(id: string) { const result=await request("thread.open",{threadId:id}) as {thread:Obj}; thread=result.thread; renderThreads(); renderConversation(thread); closeDrawer(); }
+function renderConversation(t: Obj) { items.clear(); el.messages.replaceChildren(); el.empty.classList.add("hidden"); el.messages.classList.remove("hidden"); el.threadTitle.textContent=String(t.name||firstLine(String(t.preview??""))||"Untitled session"); el.threadMeta.textContent=`${shortPath(String(t.cwd??""))} · encrypted home bridge`; for(const turn of (t.turns??[]) as Obj[]) for(const item of (turn.items??[]) as Obj[]) renderItem(item,false); const active=[...((t.turns??[]) as Obj[])].reverse().find(x=>x.status==="inProgress"); activeTurnId=String(active?.id??""); setComposer(true); scroll(); }
 
-async function loadThreads(): Promise<void> {
-  if (!transport) return;
-  try {
-    const result = await transport.request("threads.list") as Record<string, unknown>;
-    const threads = (result.data ?? result.threads ?? []) as Array<Record<string, unknown>>;
-    threadSelect.replaceChildren(...threads.map((thread) => {
-      const option = document.createElement("option");
-      option.value = String(thread.id ?? "");
-      option.textContent = String(thread.name ?? thread.title ?? thread.preview ?? thread.id ?? "Session").slice(0, 100);
-      return option;
-    }));
-    if (threadSelect.value) await openThread(threadSelect.value);
-  } catch (error) { fail(error); }
+function handleEvent(event: Obj) {
+  if(event.type==="approval.requested") return renderApproval(event);
+  if(event.type!=="codex.event") return;
+  const p=(event.params??{}) as Obj; if(p.threadId&&thread?.id&&p.threadId!==thread.id)return; const m=String(event.method??"");
+  if(m==="turn/started") activeTurnId=String((p.turn as Obj)?.id??""); else if(m==="turn/completed"){activeTurnId="";void refreshThreads();}
+  else if((m==="item/started"||m==="item/completed")&&p.item)renderItem(p.item as Obj);
+  else if(m==="item/agentMessage/delta")appendDelta(String(p.itemId),String(p.delta??""),"agent");
+  else if(m==="item/reasoning/summaryTextDelta")appendDelta(String(p.itemId),String(p.delta??""),"reasoning");
+  else if(m.includes("outputDelta"))appendToolDelta(String(p.itemId),String(p.delta??"")); updateControls();
 }
+function renderItem(item: Obj, doScroll=true) { const id=String(item.id??crypto.randomUUID()); let n=items.get(id); if(!n){ if(item.type==="userMessage"){n=document.createElement("div");n.className="message user";n.textContent=((item.content??[]) as Obj[]).map(x=>String(x.text??"")).join("");}else if(item.type==="agentMessage"){n=document.createElement("div");n.className="message agent";n.textContent=String(item.text??"");}else if(item.type==="reasoning"){n=document.createElement("div");n.className="message reasoning";n.textContent=((item.summary??[]) as unknown[]).map(String).join("\n");}else{const d=document.createElement("details");d.className="tool-card";const s=document.createElement("summary");s.textContent=toolTitle(item);const pre=document.createElement("pre");pre.textContent=toolBody(item);pre.dataset.body="1";d.append(s,pre);n=d;} n.dataset.itemId=id;items.set(id,n);el.messages.append(n);}else if(item.type==="agentMessage")n.textContent=String(item.text??n.textContent);else{const b=n.querySelector<HTMLElement>("[data-body]");if(b)b.textContent=toolBody(item);}if(doScroll)scroll(); }
+function appendDelta(id:string,delta:string,kind:string){let n=items.get(id);if(!n){n=document.createElement("div");n.className=`message ${kind}`;items.set(id,n);el.messages.append(n);}n.textContent+=delta;scroll();}
+function appendToolDelta(id:string,delta:string){const b=items.get(id)?.querySelector<HTMLElement>("[data-body]");if(b)b.textContent+=delta;scroll();}
 
-async function openThread(threadId: string): Promise<void> {
-  if (!transport || !threadId) return;
-  activeThreadId = threadId;
-  const result = await transport.request("thread.open", { threadId }) as { thread?: Record<string, unknown> };
-  renderConversation(result.thread ?? {});
-}
+function renderApproval(a:Obj){if((a.params as Obj)?.threadId!==thread?.id)return;const card=document.createElement("article");card.className="approval";const h=document.createElement("h3");h.textContent=String(a.approvalType).includes("command")?"Command needs approval":"File change needs approval";const pre=document.createElement("pre");pre.textContent=String((a.params as Obj)?.command||(a.params as Obj)?.reason||"Codex requested approval");const actions=document.createElement("div");actions.className="approval-actions";for(const [label,decision] of [["Decline","decline"],["Face ID and approve","accept"]] as const){const b=document.createElement("button");b.textContent=label;b.onclick=()=>void approve(a,decision,card);actions.append(b);}card.append(h,pre,actions);el.approvals.append(card);}
+async function approve(a:Obj,decision:string,card:HTMLElement){const digest=String(a.actionDigest);const options=await request("auth.approval.options",{actionDigest:digest});const response=await startAuthentication({optionsJSON:options as Parameters<typeof startAuthentication>[0]["optionsJSON"]});await request("auth.approval.verify",{response});await request("approval.resolve",{approvalId:a.requestId,actionDigest:digest,decision});card.remove();}
 
-function renderConversation(thread: Record<string, unknown>): void {
-  renderedItems.clear();
-  output.replaceChildren();
-  const turns = (thread.turns ?? []) as Array<Record<string, unknown>>;
-  for (const turn of turns) for (const item of (turn.items ?? []) as Array<Record<string, unknown>>) renderItem(item, false);
-  const active = [...turns].reverse().find((turn) => turn.status === "inProgress");
-  activeTurnId = typeof active?.id === "string" ? active.id : "";
-  scrollConversation();
-}
-
-function handleCodexEvent(method: string, params: Record<string, unknown>): void {
-  if (method === "turn/started") {
-    const turn = params.turn as Record<string, unknown> | undefined;
-    activeTurnId = typeof turn?.id === "string" ? turn.id : activeTurnId;
-  } else if (method === "turn/completed") {
-    activeTurnId = "";
-    void loadThreads();
-  } else if (method === "item/started" || method === "item/completed") {
-    if (params.item && typeof params.item === "object") renderItem(params.item as Record<string, unknown>);
-  } else if (method === "item/agentMessage/delta") {
-    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "agent");
-  } else if (method === "item/reasoning/summaryTextDelta") {
-    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "reasoning");
-  } else if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
-    appendToolDelta(String(params.itemId ?? ""), String(params.delta ?? ""));
-  } else if (method === "error" || method === "warning") {
-    fail(String(params.message ?? (params.error as Record<string, unknown> | undefined)?.message ?? "Codex reported an error"));
-  }
-}
-
-function renderItem(item: Record<string, unknown>, scroll = true): void {
-  const id = String(item.id ?? crypto.randomUUID());
-  let node = renderedItems.get(id);
-  if (!node) {
-    if (item.type === "userMessage") {
-      node = document.createElement("div");
-      node.className = "chat-message user";
-      const content = (item.content ?? []) as Array<Record<string, unknown>>;
-      node.textContent = content.map((part) => String(part.text ?? "")).join("");
-    } else if (item.type === "agentMessage") {
-      node = document.createElement("div"); node.className = "chat-message agent"; node.textContent = String(item.text ?? "");
-    } else if (item.type === "reasoning") {
-      node = document.createElement("div"); node.className = "chat-message reasoning"; node.textContent = ((item.summary ?? []) as unknown[]).map(String).join("\n");
-    } else {
-      const details = document.createElement("details"); details.className = "chat-tool";
-      const summary = document.createElement("summary"); summary.textContent = toolTitle(item);
-      const body = document.createElement("pre"); body.textContent = toolBody(item); body.dataset.toolBody = "true";
-      details.append(summary, body); node = details;
-    }
-    node.dataset.itemId = id;
-    renderedItems.set(id, node);
-    output.append(node);
-  } else if (item.type === "agentMessage") node.textContent = String(item.text ?? node.textContent);
-  else if (item.type === "reasoning") node.textContent = ((item.summary ?? []) as unknown[]).map(String).join("\n");
-  else {
-    const body = node.querySelector<HTMLElement>("[data-tool-body]");
-    if (body) body.textContent = toolBody(item);
-  }
-  if (scroll) scrollConversation();
-}
-
-function appendDelta(id: string, delta: string, kind: "agent" | "reasoning"): void {
-  let node = renderedItems.get(id);
-  if (!node) {
-    node = document.createElement("div"); node.className = `chat-message ${kind}`; node.dataset.itemId = id;
-    renderedItems.set(id, node); output.append(node);
-  }
-  node.textContent += delta;
-  scrollConversation();
-}
-
-function appendToolDelta(id: string, delta: string): void {
-  const body = renderedItems.get(id)?.querySelector<HTMLElement>("[data-tool-body]");
-  if (body) body.textContent += delta;
-  scrollConversation();
-}
-
-function toolTitle(item: Record<string, unknown>): string {
-  if (item.type === "commandExecution") return `Terminal · ${String(item.status ?? "running")}`;
-  if (item.type === "fileChange") return `Files changed · ${String(item.status ?? "running")}`;
-  if (item.type === "mcpToolCall") return `${String(item.server ?? "MCP")} / ${String(item.tool ?? "tool")}`;
-  if (item.type === "plan") return "Plan";
-  return String(item.type ?? "Codex activity").replace(/([A-Z])/g, " $1");
-}
-
-function toolBody(item: Record<string, unknown>): string {
-  if (item.type === "commandExecution") return [item.command, item.aggregatedOutput].filter(Boolean).map(String).join("\n\n");
-  if (item.type === "fileChange") return ((item.changes ?? []) as Array<Record<string, unknown>>).map((change) => `${String(change.kind)}: ${String(change.path)}\n${String(change.diff ?? "")}`).join("\n\n");
-  if (item.type === "plan") return String(item.text ?? "");
-  return JSON.stringify(item, null, 2);
-}
-
-function scrollConversation(): void { requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; }); }
-
-async function sendMessage(): Promise<void> {
-  const text = promptInput.value.trim();
-  if (!transport || !activeThreadId || !text) return;
-  promptInput.value = "";
-  const result = await transport.request("turn.start", { threadId: activeThreadId, text }) as Record<string, unknown>;
-  const turn = result.turn as Record<string, unknown> | undefined;
-  if (typeof turn?.id === "string") activeTurnId = turn.id;
-}
-
-async function interrupt(): Promise<void> {
-  if (transport && activeThreadId && activeTurnId) await transport.request("turn.interrupt", { threadId: activeThreadId, turnId: activeTurnId });
-}
-
-function fail(error: unknown): void {
-  status.textContent = error instanceof Error ? error.message : String(error);
-  status.classList.add("error");
-}
+el.composer.onsubmit=async(e)=>{e.preventDefault();const text=el.prompt.value.trim();if(!text||!thread)return;el.prompt.value="";if(activeTurnId)await request("turn.steer",{threadId:thread.id,turnId:activeTurnId,text});else{const r=await request("turn.start",{threadId:thread.id,text}) as Obj;activeTurnId=String((r.turn as Obj)?.id??"");}updateControls();};
+el.stop.onclick=()=>void(thread&&activeTurnId&&request("turn.interrupt",{threadId:thread.id,turnId:activeTurnId}));
+byId("open-sidebar").onclick=openDrawer;byId("close-sidebar").onclick=closeDrawer;el.scrim.onclick=closeDrawer;
+byId("new-thread").onclick=()=>el.dialog.showModal();byId<HTMLFormElement>("new-thread-form").onsubmit=async(e)=>{if((e as SubmitEvent).submitter?.getAttribute("value")!=="create")return;e.preventDefault();const r=await request("thread.create",{cwd:el.cwd.value.trim()}) as Obj;el.dialog.close();await refreshThreads();await openThread(String((r.thread as Obj).id));};
+document.addEventListener("visibilitychange",()=>{if(document.hidden)backgroundTimer=window.setTimeout(lock,5*60_000);else if(backgroundTimer!==null){clearTimeout(backgroundTimer);backgroundTimer=null;}});
+setInterval(()=>{if(transport)void refreshThreads().catch(()=>{});},5000);
+function setComposer(on:boolean){el.prompt.disabled=!on;el.send.disabled=!on;updateControls();}function updateControls(){el.stop.classList.toggle("hidden",!activeTurnId);el.hint.textContent=activeTurnId?"Send to steer the active turn":"Enter to send · Shift+Enter for a new line";}
+function openDrawer(){el.sidebar.classList.add("open");el.scrim.classList.add("visible");}function closeDrawer(){el.sidebar.classList.remove("open");el.scrim.classList.remove("visible");}
+function gateError(x:unknown){el.gateStatus.textContent=x instanceof Error?x.message:String(x);}function scroll(){requestAnimationFrame(()=>el.messages.scrollTop=el.messages.scrollHeight);}
+function firstLine(s:string){return s.split("\n")[0]!.slice(0,80);}function shortPath(s:string){const p=s.split("/").filter(Boolean);return p.length>2?`…/${p.slice(-2).join("/")}`:s||"Unknown folder";}function relativeTime(s:number){if(!s)return "Unknown";const d=Math.max(0,Date.now()/1000-s);return d<60?"Now":d<3600?`${Math.floor(d/60)}m`:d<86400?`${Math.floor(d/3600)}h`:`${Math.floor(d/86400)}d`;}
+function toolTitle(i:Obj){if(i.type==="commandExecution")return`Terminal · ${i.status||"running"}`;if(i.type==="fileChange")return`Files changed · ${i.status||"running"}`;if(i.type==="mcpToolCall")return`${i.server||"MCP"} / ${i.tool||"tool"}`;return String(i.type||"Codex activity");}function toolBody(i:Obj){if(i.type==="commandExecution")return[i.command,i.aggregatedOutput].filter(Boolean).join("\n\n");if(i.type==="fileChange")return((i.changes??[]) as Obj[]).map(c=>`${c.kind}: ${c.path}\n${c.diff||""}`).join("\n\n");return JSON.stringify(i,null,2);}

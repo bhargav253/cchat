@@ -12,6 +12,7 @@ const PUBLIC_ORIGIN = process.env.CCHAT_PUBLIC_ORIGIN ?? "https://mycchat.win";
 const DATABASE_PATH = process.env.CCHAT_RELAY_DB ?? "./data/relay.sqlite";
 const MAX_ROUTED_FRAME_BYTES = 4 * 1024 * 1024;
 const publicDir = fileURLToPath(new URL("../../relay-public", import.meta.url));
+const localPublicDir = fileURLToPath(new URL("../../public", import.meta.url));
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 if (!PUBLIC_ORIGIN.startsWith("https://")) throw new Error("CCHAT_PUBLIC_ORIGIN must use HTTPS");
@@ -273,8 +274,9 @@ function serveStatic(url: string, response: ServerResponse, headOnly: boolean): 
   const pathname = new URL(url, PUBLIC_ORIGIN).pathname;
   const requested = pathname === "/" ? "/index.html" : pathname;
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, "");
-  const filePath = join(publicDir, safePath);
-  if (!filePath.startsWith(publicDir) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+  const root = requested === "/styles.css" ? localPublicDir : publicDir;
+  const filePath = join(root, safePath);
+  if (!filePath.startsWith(root) || !existsSync(filePath) || !statSync(filePath).isFile()) {
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" }).end("Not found\n");
     return;
   }

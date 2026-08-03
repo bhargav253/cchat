@@ -1,0 +1,15 @@
+.security-gate { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 30px; text-align: center; background: radial-gradient(circle at 50% 30%, #20251a, #11120f 48%); }
+.security-gate h1 { margin: 0; font-size: clamp(28px, 8vw, 42px); }
+.security-gate p { color: var(--muted); max-width: 430px; line-height: 1.6; }
+.gate-eyebrow { color: var(--accent) !important; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
+.gate-button { border: 0; border-radius: 12px; padding: 13px 18px; background: var(--accent); color: #111; font-weight: 800; }
+#home-status { color: var(--muted); }
+.drawer-scrim { display: none; }
+@media (max-width: 720px) {
+  .drawer-scrim { position: fixed; z-index: 9; inset: 0; background: #0009; }
+  .drawer-scrim.visible { display: block; }
+  .sidebar { padding-top: max(18px, env(safe-area-inset-top)); padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+  .topbar { padding-top: env(safe-area-inset-top); height: calc(65px + env(safe-area-inset-top)); }
+  .conversation { height: 100dvh; grid-template-rows: auto minmax(0, 1fr) auto auto; }
+  .messages { overscroll-behavior: contain; }
+}

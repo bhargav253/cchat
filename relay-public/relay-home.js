@@ -3990,16 +3990,16 @@ function sessionTranscript(hello, bridgeEphemeralPublicKey) {
 function frame(...values) {
   const encoded = values.map(text);
   const size = encoded.reduce((total, value) => total + 4 + value.length, 0);
-  const output2 = new Uint8Array(size);
-  const view = new DataView(output2.buffer);
+  const output = new Uint8Array(size);
+  const view = new DataView(output.buffer);
   let offset = 0;
   for (const value of encoded) {
     view.setUint32(offset, value.length, false);
     offset += 4;
-    output2.set(value, offset);
+    output.set(value, offset);
     offset += value.length;
   }
-  return output2;
+  return output;
 }
 function channelId(transcript) {
   return encode(libsodium_wrappers_default.crypto_generichash(16, transcript, null));
@@ -4016,9 +4016,9 @@ function envelopeAad(envelope) {
 }
 function nonce(counter) {
   if (counter < 0n || counter > 0xffffffffffffffffn) throw new Error("Encrypted counter exhausted");
-  const output2 = new Uint8Array(libsodium_wrappers_default.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
-  new DataView(output2.buffer).setBigUint64(output2.length - 8, counter, false);
-  return output2;
+  const output = new Uint8Array(libsodium_wrappers_default.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);
+  new DataView(output.buffer).setBigUint64(output.length - 8, counter, false);
+  return output;
 }
 function parseCounter(value) {
   if (!/^(0|[1-9][0-9]{0,19})$/.test(value)) throw new Error("Invalid encrypted counter");
@@ -4029,8 +4029,8 @@ function parseCounter(value) {
 
 // src/browser/encrypted-transport.ts
 var EncryptedTransport = class {
-  constructor(device2) {
-    this.device = device2;
+  constructor(device) {
+    this.device = device;
   }
   socket = null;
   channel = null;
@@ -4145,12 +4145,12 @@ function loadDevice() {
     open.onupgradeneeded = () => open.result.createObjectStore("device");
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
-      const request = open.result.transaction("device", "readonly").objectStore("device").get("current");
-      request.onsuccess = () => {
+      const request2 = open.result.transaction("device", "readonly").objectStore("device").get("current");
+      request2.onsuccess = () => {
         open.result.close();
-        resolve(request.result ?? null);
+        resolve(request2.result ?? null);
       };
-      request.onerror = () => reject(request.error);
+      request2.onerror = () => reject(request2.error);
     };
   });
 }
@@ -4159,283 +4159,330 @@ function asError(error) {
 }
 
 // src/browser/relay-home.ts
-var title = document.querySelector("#home-title");
-var copy = document.querySelector("#home-copy");
-var button = document.querySelector("#unlock-button");
-var status = document.querySelector("#home-status");
-var approvalPanel = document.querySelector("#approval-panel");
-var approvalSummary = document.querySelector("#approval-summary");
-var chatPanel = document.querySelector("#chat-panel");
-var threadSelect = document.querySelector("#thread-select");
-var output = document.querySelector("#conversation-output");
-var promptInput = document.querySelector("#prompt-input");
-var activeThreadId = "";
-var activeTurnId = "";
-var renderedItems = /* @__PURE__ */ new Map();
+var byId = (id) => document.getElementById(id);
+var el = {
+  gate: byId("security-gate"),
+  shell: byId("app-shell"),
+  title: byId("home-title"),
+  copy: byId("home-copy"),
+  gateStatus: byId("home-status"),
+  unlock: byId("unlock-button"),
+  sidebar: byId("sidebar"),
+  scrim: byId("drawer-scrim"),
+  threadList: byId("thread-list"),
+  threadTitle: byId("thread-title"),
+  threadMeta: byId("thread-meta"),
+  empty: byId("empty-state"),
+  messages: byId("messages"),
+  approvals: byId("approval-tray"),
+  prompt: byId("prompt"),
+  composer: byId("composer"),
+  send: byId("send"),
+  stop: byId("stop-turn"),
+  hint: byId("composer-hint"),
+  status: byId("status-detail"),
+  cwd: byId("cwd"),
+  dialog: byId("new-thread-dialog")
+};
 var transport = null;
+var threads = [];
+var thread = null;
+var activeTurnId = "";
 var backgroundTimer = null;
 var sessionTimer = null;
-var device = await loadDevice();
-if (!device) {
-  title.textContent = "This device is not paired";
-  copy.textContent = "Pairing will be enabled after the complete security validation is finished.";
-  status.textContent = "Relay available \xB7 no conversation data exposed";
-} else {
+var items = /* @__PURE__ */ new Map();
+await initialize();
+async function initialize() {
+  const device = await loadDevice();
+  if (!device) {
+    el.title.textContent = "This device is not paired";
+    el.copy.textContent = "Create a one-time QR code from your home bridge.";
+    return;
+  }
   try {
-    status.textContent = "Establishing encrypted connection to your home bridge\u2026";
+    el.gateStatus.textContent = "Establishing encrypted connection\u2026";
     transport = new EncryptedTransport(device);
-    transport.onClose(() => {
-      transport = null;
-      chatPanel.hidden = true;
-      title.textContent = "Connection closed";
-      copy.textContent = "Reload and use Face ID to establish a new encrypted channel.";
-      status.textContent = "Encrypted connection closed";
-    });
+    transport.onEvent(handleEvent);
+    transport.onClose(showDisconnected);
     await transport.connect();
-    transport.onEvent(handleEncryptedEvent);
     const auth = await transport.request("auth.status");
     if (!auth.registered) await registerPasskey();
     else showLocked();
   } catch (error) {
-    fail(error);
+    gateError(error);
   }
 }
-function handleEncryptedEvent(event) {
-  if (event.type === "codex.event") {
-    const params = event.params ?? {};
-    if (params.threadId && activeThreadId && params.threadId !== activeThreadId) return;
-    const turn = params?.turn;
-    if (typeof turn?.id === "string") activeTurnId = turn.id;
-    handleCodexEvent(String(event.method ?? ""), params);
-  }
-  if (event.type !== "approval.requested") return;
-  const approvalId = String(event.requestId ?? "");
-  const actionDigest = String(event.actionDigest ?? "");
-  if (!approvalId || !actionDigest) return;
-  approvalSummary.textContent = JSON.stringify({ approvalType: event.approvalType, params: event.params }, null, 2);
-  approvalPanel.hidden = false;
-  for (const element of approvalPanel.querySelectorAll("button[data-decision]")) {
-    element.onclick = () => void resolveApproval(approvalId, actionDigest, element.dataset.decision);
-  }
-}
-async function resolveApproval(approvalId, actionDigest, decision) {
-  if (!transport) return;
-  for (const element of approvalPanel.querySelectorAll("button")) element.disabled = true;
-  try {
-    status.textContent = "Confirm this exact approval with Face ID\u2026";
-    const options = await transport.request("auth.approval.options", { actionDigest });
-    const response = await startAuthentication({ optionsJSON: options });
-    await transport.request("auth.approval.verify", { response });
-    await transport.request("approval.resolve", { approvalId, actionDigest, decision });
-    approvalPanel.hidden = true;
-    status.textContent = `Approval ${decision === "accept" ? "accepted" : "declined"} after Face ID`;
-  } catch (error) {
-    fail(error);
-    for (const element of approvalPanel.querySelectorAll("button")) element.disabled = false;
-  }
-}
-button.addEventListener("click", () => void unlock());
-document.querySelector("#refresh-threads").addEventListener("click", () => void loadThreads());
-threadSelect.addEventListener("change", () => void openThread(threadSelect.value));
-document.querySelector("#send-prompt").addEventListener("click", () => void sendMessage());
-document.querySelector("#interrupt-turn").addEventListener("click", () => void interrupt());
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    backgroundTimer = window.setTimeout(lock, 5 * 6e4);
-  } else if (backgroundTimer !== null) {
-    window.clearTimeout(backgroundTimer);
-    backgroundTimer = null;
-  }
-});
 async function registerPasskey() {
   if (!transport) return;
-  title.textContent = "Protect this phone";
-  copy.textContent = "Create a passkey verified directly by your home bridge.";
-  status.textContent = "Waiting for Face ID\u2026";
+  el.title.textContent = "Protect this phone";
+  el.copy.textContent = "Create a passkey verified directly by your home bridge.";
   const options = await transport.request("auth.register.options");
   const response = await startRegistration({ optionsJSON: options });
   const result = await transport.request("auth.register.verify", { response });
-  showUnlocked(result.authenticatedUntil);
+  showApp(result.authenticatedUntil);
 }
-async function unlock() {
-  if (!transport) return;
-  button.disabled = true;
-  status.textContent = "Waiting for Face ID\u2026";
+function showLocked() {
+  el.title.textContent = "Unlock cchat";
+  el.copy.textContent = "Confirm with Face ID to open a 15-minute session.";
+  el.unlock.hidden = false;
+  el.gateStatus.textContent = "Encrypted connection \xB7 locked";
+}
+el.unlock.onclick = async () => {
+  if (!transport) return location.reload();
+  el.unlock.disabled = true;
   try {
     const options = await transport.request("auth.authenticate.options");
     const response = await startAuthentication({ optionsJSON: options });
     const result = await transport.request("auth.authenticate.verify", { response });
-    showUnlocked(result.authenticatedUntil);
+    showApp(result.authenticatedUntil);
   } catch (error) {
-    fail(error);
-    button.disabled = false;
+    gateError(error);
+    el.unlock.disabled = false;
   }
-}
-function showLocked() {
-  title.textContent = "Unlock cchat";
-  copy.textContent = "Confirm with Face ID to open a 15-minute bridge-authorized session.";
-  status.textContent = "Encrypted connection \xB7 locked";
-  button.hidden = false;
-  button.disabled = false;
-}
-function showUnlocked(expiresAt) {
-  title.textContent = "cchat unlocked";
-  copy.textContent = "Your home bridge verified Face ID. Codex UI wiring is in progress.";
-  status.textContent = `Encrypted and authenticated until ${new Date(expiresAt).toLocaleTimeString()}`;
-  button.hidden = true;
-  chatPanel.hidden = false;
-  void loadThreads();
-  if (sessionTimer !== null) window.clearTimeout(sessionTimer);
+};
+function showApp(expiresAt) {
+  el.gate.classList.add("hidden");
+  el.shell.classList.remove("hidden");
+  if (sessionTimer !== null) clearTimeout(sessionTimer);
   sessionTimer = window.setTimeout(lock, Math.max(0, expiresAt - Date.now()));
+  void refreshThreads();
 }
 function lock() {
-  if (sessionTimer !== null) window.clearTimeout(sessionTimer);
-  sessionTimer = null;
   transport?.close();
   transport = null;
-  title.textContent = "cchat locked";
-  copy.textContent = "The encrypted channel closed after five minutes in the background. Reload to reconnect.";
-  status.textContent = "Locked";
-  button.hidden = true;
-  chatPanel.hidden = true;
+  el.shell.classList.add("hidden");
+  el.gate.classList.remove("hidden");
+  el.title.textContent = "cchat locked";
+  el.copy.textContent = "Reload and use Face ID to reconnect.";
+  el.unlock.hidden = true;
 }
-async function loadThreads() {
-  if (!transport) return;
-  try {
-    const result = await transport.request("threads.list");
-    const threads = result.data ?? result.threads ?? [];
-    threadSelect.replaceChildren(...threads.map((thread) => {
-      const option = document.createElement("option");
-      option.value = String(thread.id ?? "");
-      option.textContent = String(thread.name ?? thread.title ?? thread.preview ?? thread.id ?? "Session").slice(0, 100);
-      return option;
-    }));
-    if (threadSelect.value) await openThread(threadSelect.value);
-  } catch (error) {
-    fail(error);
-  }
+function showDisconnected() {
+  transport = null;
+  el.status.textContent = "Encrypted connection closed";
+  el.shell.classList.add("hidden");
+  el.gate.classList.remove("hidden");
+  el.title.textContent = "Connection closed";
+  el.copy.textContent = "Reload to establish a fresh encrypted channel.";
+  el.unlock.hidden = true;
 }
-async function openThread(threadId) {
-  if (!transport || !threadId) return;
-  activeThreadId = threadId;
-  const result = await transport.request("thread.open", { threadId });
-  renderConversation(result.thread ?? {});
+async function request(type, body = {}) {
+  if (!transport) throw new Error("Bridge is disconnected");
+  return transport.request(type, body);
 }
-function renderConversation(thread) {
-  renderedItems.clear();
-  output.replaceChildren();
-  const turns = thread.turns ?? [];
-  for (const turn of turns) for (const item of turn.items ?? []) renderItem(item, false);
-  const active = [...turns].reverse().find((turn) => turn.status === "inProgress");
-  activeTurnId = typeof active?.id === "string" ? active.id : "";
-  scrollConversation();
+async function refreshThreads() {
+  const result = await request("threads.list");
+  threads = result.data ?? [];
+  renderThreads();
 }
-function handleCodexEvent(method, params) {
-  if (method === "turn/started") {
-    const turn = params.turn;
-    activeTurnId = typeof turn?.id === "string" ? turn.id : activeTurnId;
-  } else if (method === "turn/completed") {
+function renderThreads() {
+  el.threadList.replaceChildren(...threads.map((t2) => {
+    const b2 = document.createElement("button");
+    b2.className = `thread${thread?.id === t2.id ? " active" : ""}`;
+    const s2 = document.createElement("strong");
+    s2.textContent = String(t2.name || firstLine(String(t2.preview ?? "")) || "Untitled session");
+    const d2 = document.createElement("small");
+    d2.textContent = `${relativeTime(Number(t2.recencyAt || t2.updatedAt))} \xB7 ${shortPath(String(t2.cwd ?? ""))}`;
+    b2.append(s2, d2);
+    b2.onclick = () => void openThread(String(t2.id));
+    return b2;
+  }));
+}
+async function openThread(id) {
+  const result = await request("thread.open", { threadId: id });
+  thread = result.thread;
+  renderThreads();
+  renderConversation(thread);
+  closeDrawer();
+}
+function renderConversation(t2) {
+  items.clear();
+  el.messages.replaceChildren();
+  el.empty.classList.add("hidden");
+  el.messages.classList.remove("hidden");
+  el.threadTitle.textContent = String(t2.name || firstLine(String(t2.preview ?? "")) || "Untitled session");
+  el.threadMeta.textContent = `${shortPath(String(t2.cwd ?? ""))} \xB7 encrypted home bridge`;
+  for (const turn of t2.turns ?? []) for (const item of turn.items ?? []) renderItem(item, false);
+  const active = [...t2.turns ?? []].reverse().find((x2) => x2.status === "inProgress");
+  activeTurnId = String(active?.id ?? "");
+  setComposer(true);
+  scroll();
+}
+function handleEvent(event) {
+  if (event.type === "approval.requested") return renderApproval(event);
+  if (event.type !== "codex.event") return;
+  const p2 = event.params ?? {};
+  if (p2.threadId && thread?.id && p2.threadId !== thread.id) return;
+  const m2 = String(event.method ?? "");
+  if (m2 === "turn/started") activeTurnId = String(p2.turn?.id ?? "");
+  else if (m2 === "turn/completed") {
     activeTurnId = "";
-    void loadThreads();
-  } else if (method === "item/started" || method === "item/completed") {
-    if (params.item && typeof params.item === "object") renderItem(params.item);
-  } else if (method === "item/agentMessage/delta") {
-    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "agent");
-  } else if (method === "item/reasoning/summaryTextDelta") {
-    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "reasoning");
-  } else if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
-    appendToolDelta(String(params.itemId ?? ""), String(params.delta ?? ""));
-  } else if (method === "error" || method === "warning") {
-    fail(String(params.message ?? params.error?.message ?? "Codex reported an error"));
-  }
+    void refreshThreads();
+  } else if ((m2 === "item/started" || m2 === "item/completed") && p2.item) renderItem(p2.item);
+  else if (m2 === "item/agentMessage/delta") appendDelta(String(p2.itemId), String(p2.delta ?? ""), "agent");
+  else if (m2 === "item/reasoning/summaryTextDelta") appendDelta(String(p2.itemId), String(p2.delta ?? ""), "reasoning");
+  else if (m2.includes("outputDelta")) appendToolDelta(String(p2.itemId), String(p2.delta ?? ""));
+  updateControls();
 }
-function renderItem(item, scroll = true) {
+function renderItem(item, doScroll = true) {
   const id = String(item.id ?? crypto.randomUUID());
-  let node = renderedItems.get(id);
-  if (!node) {
+  let n2 = items.get(id);
+  if (!n2) {
     if (item.type === "userMessage") {
-      node = document.createElement("div");
-      node.className = "chat-message user";
-      const content = item.content ?? [];
-      node.textContent = content.map((part) => String(part.text ?? "")).join("");
+      n2 = document.createElement("div");
+      n2.className = "message user";
+      n2.textContent = (item.content ?? []).map((x2) => String(x2.text ?? "")).join("");
     } else if (item.type === "agentMessage") {
-      node = document.createElement("div");
-      node.className = "chat-message agent";
-      node.textContent = String(item.text ?? "");
+      n2 = document.createElement("div");
+      n2.className = "message agent";
+      n2.textContent = String(item.text ?? "");
     } else if (item.type === "reasoning") {
-      node = document.createElement("div");
-      node.className = "chat-message reasoning";
-      node.textContent = (item.summary ?? []).map(String).join("\n");
+      n2 = document.createElement("div");
+      n2.className = "message reasoning";
+      n2.textContent = (item.summary ?? []).map(String).join("\n");
     } else {
-      const details = document.createElement("details");
-      details.className = "chat-tool";
-      const summary = document.createElement("summary");
-      summary.textContent = toolTitle(item);
-      const body = document.createElement("pre");
-      body.textContent = toolBody(item);
-      body.dataset.toolBody = "true";
-      details.append(summary, body);
-      node = details;
+      const d2 = document.createElement("details");
+      d2.className = "tool-card";
+      const s2 = document.createElement("summary");
+      s2.textContent = toolTitle(item);
+      const pre = document.createElement("pre");
+      pre.textContent = toolBody(item);
+      pre.dataset.body = "1";
+      d2.append(s2, pre);
+      n2 = d2;
     }
-    node.dataset.itemId = id;
-    renderedItems.set(id, node);
-    output.append(node);
-  } else if (item.type === "agentMessage") node.textContent = String(item.text ?? node.textContent);
-  else if (item.type === "reasoning") node.textContent = (item.summary ?? []).map(String).join("\n");
+    n2.dataset.itemId = id;
+    items.set(id, n2);
+    el.messages.append(n2);
+  } else if (item.type === "agentMessage") n2.textContent = String(item.text ?? n2.textContent);
   else {
-    const body = node.querySelector("[data-tool-body]");
-    if (body) body.textContent = toolBody(item);
+    const b2 = n2.querySelector("[data-body]");
+    if (b2) b2.textContent = toolBody(item);
   }
-  if (scroll) scrollConversation();
+  if (doScroll) scroll();
 }
 function appendDelta(id, delta, kind) {
-  let node = renderedItems.get(id);
-  if (!node) {
-    node = document.createElement("div");
-    node.className = `chat-message ${kind}`;
-    node.dataset.itemId = id;
-    renderedItems.set(id, node);
-    output.append(node);
+  let n2 = items.get(id);
+  if (!n2) {
+    n2 = document.createElement("div");
+    n2.className = `message ${kind}`;
+    items.set(id, n2);
+    el.messages.append(n2);
   }
-  node.textContent += delta;
-  scrollConversation();
+  n2.textContent += delta;
+  scroll();
 }
 function appendToolDelta(id, delta) {
-  const body = renderedItems.get(id)?.querySelector("[data-tool-body]");
-  if (body) body.textContent += delta;
-  scrollConversation();
+  const b2 = items.get(id)?.querySelector("[data-body]");
+  if (b2) b2.textContent += delta;
+  scroll();
 }
-function toolTitle(item) {
-  if (item.type === "commandExecution") return `Terminal \xB7 ${String(item.status ?? "running")}`;
-  if (item.type === "fileChange") return `Files changed \xB7 ${String(item.status ?? "running")}`;
-  if (item.type === "mcpToolCall") return `${String(item.server ?? "MCP")} / ${String(item.tool ?? "tool")}`;
-  if (item.type === "plan") return "Plan";
-  return String(item.type ?? "Codex activity").replace(/([A-Z])/g, " $1");
+function renderApproval(a2) {
+  if (a2.params?.threadId !== thread?.id) return;
+  const card = document.createElement("article");
+  card.className = "approval";
+  const h2 = document.createElement("h3");
+  h2.textContent = String(a2.approvalType).includes("command") ? "Command needs approval" : "File change needs approval";
+  const pre = document.createElement("pre");
+  pre.textContent = String(a2.params?.command || a2.params?.reason || "Codex requested approval");
+  const actions = document.createElement("div");
+  actions.className = "approval-actions";
+  for (const [label, decision] of [["Decline", "decline"], ["Face ID and approve", "accept"]]) {
+    const b2 = document.createElement("button");
+    b2.textContent = label;
+    b2.onclick = () => void approve(a2, decision, card);
+    actions.append(b2);
+  }
+  card.append(h2, pre, actions);
+  el.approvals.append(card);
 }
-function toolBody(item) {
-  if (item.type === "commandExecution") return [item.command, item.aggregatedOutput].filter(Boolean).map(String).join("\n\n");
-  if (item.type === "fileChange") return (item.changes ?? []).map((change) => `${String(change.kind)}: ${String(change.path)}
-${String(change.diff ?? "")}`).join("\n\n");
-  if (item.type === "plan") return String(item.text ?? "");
-  return JSON.stringify(item, null, 2);
+async function approve(a2, decision, card) {
+  const digest = String(a2.actionDigest);
+  const options = await request("auth.approval.options", { actionDigest: digest });
+  const response = await startAuthentication({ optionsJSON: options });
+  await request("auth.approval.verify", { response });
+  await request("approval.resolve", { approvalId: a2.requestId, actionDigest: digest, decision });
+  card.remove();
 }
-function scrollConversation() {
-  requestAnimationFrame(() => {
-    output.scrollTop = output.scrollHeight;
+el.composer.onsubmit = async (e) => {
+  e.preventDefault();
+  const text2 = el.prompt.value.trim();
+  if (!text2 || !thread) return;
+  el.prompt.value = "";
+  if (activeTurnId) await request("turn.steer", { threadId: thread.id, turnId: activeTurnId, text: text2 });
+  else {
+    const r2 = await request("turn.start", { threadId: thread.id, text: text2 });
+    activeTurnId = String(r2.turn?.id ?? "");
+  }
+  updateControls();
+};
+el.stop.onclick = () => void (thread && activeTurnId && request("turn.interrupt", { threadId: thread.id, turnId: activeTurnId }));
+byId("open-sidebar").onclick = openDrawer;
+byId("close-sidebar").onclick = closeDrawer;
+el.scrim.onclick = closeDrawer;
+byId("new-thread").onclick = () => el.dialog.showModal();
+byId("new-thread-form").onsubmit = async (e) => {
+  if (e.submitter?.getAttribute("value") !== "create") return;
+  e.preventDefault();
+  const r2 = await request("thread.create", { cwd: el.cwd.value.trim() });
+  el.dialog.close();
+  await refreshThreads();
+  await openThread(String(r2.thread.id));
+};
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) backgroundTimer = window.setTimeout(lock, 5 * 6e4);
+  else if (backgroundTimer !== null) {
+    clearTimeout(backgroundTimer);
+    backgroundTimer = null;
+  }
+});
+setInterval(() => {
+  if (transport) void refreshThreads().catch(() => {
   });
+}, 5e3);
+function setComposer(on) {
+  el.prompt.disabled = !on;
+  el.send.disabled = !on;
+  updateControls();
 }
-async function sendMessage() {
-  const text2 = promptInput.value.trim();
-  if (!transport || !activeThreadId || !text2) return;
-  promptInput.value = "";
-  const result = await transport.request("turn.start", { threadId: activeThreadId, text: text2 });
-  const turn = result.turn;
-  if (typeof turn?.id === "string") activeTurnId = turn.id;
+function updateControls() {
+  el.stop.classList.toggle("hidden", !activeTurnId);
+  el.hint.textContent = activeTurnId ? "Send to steer the active turn" : "Enter to send \xB7 Shift+Enter for a new line";
 }
-async function interrupt() {
-  if (transport && activeThreadId && activeTurnId) await transport.request("turn.interrupt", { threadId: activeThreadId, turnId: activeTurnId });
+function openDrawer() {
+  el.sidebar.classList.add("open");
+  el.scrim.classList.add("visible");
 }
-function fail(error) {
-  status.textContent = error instanceof Error ? error.message : String(error);
-  status.classList.add("error");
+function closeDrawer() {
+  el.sidebar.classList.remove("open");
+  el.scrim.classList.remove("visible");
+}
+function gateError(x2) {
+  el.gateStatus.textContent = x2 instanceof Error ? x2.message : String(x2);
+}
+function scroll() {
+  requestAnimationFrame(() => el.messages.scrollTop = el.messages.scrollHeight);
+}
+function firstLine(s2) {
+  return s2.split("\n")[0].slice(0, 80);
+}
+function shortPath(s2) {
+  const p2 = s2.split("/").filter(Boolean);
+  return p2.length > 2 ? `\u2026/${p2.slice(-2).join("/")}` : s2 || "Unknown folder";
+}
+function relativeTime(s2) {
+  if (!s2) return "Unknown";
+  const d2 = Math.max(0, Date.now() / 1e3 - s2);
+  return d2 < 60 ? "Now" : d2 < 3600 ? `${Math.floor(d2 / 60)}m` : d2 < 86400 ? `${Math.floor(d2 / 3600)}h` : `${Math.floor(d2 / 86400)}d`;
+}
+function toolTitle(i2) {
+  if (i2.type === "commandExecution") return `Terminal \xB7 ${i2.status || "running"}`;
+  if (i2.type === "fileChange") return `Files changed \xB7 ${i2.status || "running"}`;
+  if (i2.type === "mcpToolCall") return `${i2.server || "MCP"} / ${i2.tool || "tool"}`;
+  return String(i2.type || "Codex activity");
+}
+function toolBody(i2) {
+  if (i2.type === "commandExecution") return [i2.command, i2.aggregatedOutput].filter(Boolean).join("\n\n");
+  if (i2.type === "fileChange") return (i2.changes ?? []).map((c2) => `${c2.kind}: ${c2.path}
+${c2.diff || ""}`).join("\n\n");
+  return JSON.stringify(i2, null, 2);
 }
