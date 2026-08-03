@@ -1,7 +1,7 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif; background: #11120f; color: #eeeede; }
 * { box-sizing: border-box; }
 body { min-height: 100dvh; margin: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 30%, #20251a 0, #11120f 48%); }
-main { width: min(510px, calc(100% - 40px)); text-align: center; padding: 45px 25px; }
+main { width: min(820px, calc(100% - 24px)); text-align: center; padding: 28px 12px; }
 .mark { margin: auto; width: 58px; height: 58px; display: grid; place-items: center; border-radius: 18px; background: #d9ff72; color: #111; font: italic 36px Georgia, serif; }
 .eyebrow { margin-top: 22px; color: #d9ff72; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
 h1 { margin: 10px 0; font-size: clamp(28px, 7vw, 42px); letter-spacing: -.04em; }
@@ -26,5 +26,13 @@ button.secondary { background: #383b31; color: #eeeede; }
 .session-row { display: flex; gap: 8px; }
 select, textarea { width: 100%; border: 1px solid #3a3d33; background: #181a16; color: #eeeede; border-radius: 12px; padding: 12px; font: inherit; }
 .session-row button { width: auto; margin: 0; }
-#conversation-output { min-height: 220px; max-height: 45vh; overflow: auto; padding: 12px; border: 1px solid #30342a; border-radius: 12px; white-space: pre-wrap; font-size: 11px; }
+#conversation-output { min-height: 260px; max-height: 52vh; overflow: auto; padding: 18px; border: 1px solid #30342a; border-radius: 12px; text-align: left; }
+.chat-message { margin: 0 0 22px; line-height: 1.6; white-space: pre-wrap; }
+.chat-message.user { margin-left: auto; max-width: 88%; width: fit-content; background: #292a25; border: 1px solid #383a32; padding: 11px 14px; border-radius: 17px 17px 4px 17px; }
+.chat-message.agent { color: #eeeede; }
+.chat-message.reasoning { color: #9b9c91; border-left: 2px solid #505245; padding-left: 12px; font-size: 13px; }
+.chat-tool { border: 1px solid #30312b; background: #181916; border-radius: 10px; margin: 10px 0; overflow: hidden; }
+.chat-tool summary { cursor: pointer; padding: 10px 13px; color: #c8cabd; font-size: 13px; }
+.chat-tool pre { border-top: 1px solid #30312b; color: #b7b9ad; font: 12px/1.55 ui-monospace, monospace; margin: 0; max-height: 260px; overflow: auto; padding: 13px; white-space: pre-wrap; }
 textarea { margin-top: 8px; resize: vertical; }
+@media (max-width: 600px) { main { width: 100%; padding: 18px 12px; } .mark { width: 44px; height: 44px; } h1 { font-size: 26px; } .copy { font-size: 13px; } #conversation-output { max-height: 48vh; padding: 14px; } }

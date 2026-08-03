@@ -23,6 +23,8 @@ export class EncryptedTransport {
   private handshake: PhoneHandshakeState | null = null;
   private pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private eventListeners = new Set<(event: Record<string, unknown>) => void>();
+  private closeListeners = new Set<() => void>();
+  private suppressNextClose = false;
 
   constructor(private readonly device: StoredDevice) {}
 
@@ -60,11 +62,14 @@ export class EncryptedTransport {
         this.channel = null;
         for (const pending of this.pending.values()) pending.reject(new Error("Encrypted connection closed"));
         this.pending.clear();
+        if (this.suppressNextClose) this.suppressNextClose = false;
+        else for (const listener of this.closeListeners) listener();
       });
     });
   }
 
   close(): void {
+    this.suppressNextClose = true;
     this.socket?.close(1000, "Locked");
     this.socket = null;
     this.channel = null;
@@ -81,6 +86,11 @@ export class EncryptedTransport {
   onEvent(listener: (event: Record<string, unknown>) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  onClose(listener: () => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
   private async receive(raw: string, ready: () => void, reject: (error: Error) => void): Promise<void> {

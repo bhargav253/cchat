@@ -26,7 +26,7 @@
       </section>
       <section id="chat-panel" hidden>
         <div class="session-row"><select id="thread-select" aria-label="Codex session"></select><button id="refresh-threads" class="secondary">Refresh</button></div>
-        <pre id="conversation-output"></pre>
+        <section id="conversation-output" aria-live="polite"></section>
         <textarea id="prompt-input" rows="4" placeholder="Message Codex"></textarea>
         <div class="approval-actions"><button id="send-prompt">Send</button><button id="interrupt-turn" class="secondary">Interrupt</button></div>
       </section>

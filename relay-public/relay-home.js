@@ -4037,6 +4037,8 @@ var EncryptedTransport = class {
   handshake = null;
   pending = /* @__PURE__ */ new Map();
   eventListeners = /* @__PURE__ */ new Set();
+  closeListeners = /* @__PURE__ */ new Set();
+  suppressNextClose = false;
   connect() {
     return new Promise((resolve, reject) => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -4073,10 +4075,13 @@ var EncryptedTransport = class {
         this.channel = null;
         for (const pending of this.pending.values()) pending.reject(new Error("Encrypted connection closed"));
         this.pending.clear();
+        if (this.suppressNextClose) this.suppressNextClose = false;
+        else for (const listener of this.closeListeners) listener();
       });
     });
   }
   close() {
+    this.suppressNextClose = true;
     this.socket?.close(1e3, "Locked");
     this.socket = null;
     this.channel = null;
@@ -4091,6 +4096,10 @@ var EncryptedTransport = class {
   onEvent(listener) {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+  onClose(listener) {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
   async receive(raw, ready, reject) {
     try {
@@ -4162,6 +4171,7 @@ var output = document.querySelector("#conversation-output");
 var promptInput = document.querySelector("#prompt-input");
 var activeThreadId = "";
 var activeTurnId = "";
+var renderedItems = /* @__PURE__ */ new Map();
 var transport = null;
 var backgroundTimer = null;
 var sessionTimer = null;
@@ -4174,6 +4184,13 @@ if (!device) {
   try {
     status.textContent = "Establishing encrypted connection to your home bridge\u2026";
     transport = new EncryptedTransport(device);
+    transport.onClose(() => {
+      transport = null;
+      chatPanel.hidden = true;
+      title.textContent = "Connection closed";
+      copy.textContent = "Reload and use Face ID to establish a new encrypted channel.";
+      status.textContent = "Encrypted connection closed";
+    });
     await transport.connect();
     transport.onEvent(handleEncryptedEvent);
     const auth = await transport.request("auth.status");
@@ -4185,12 +4202,11 @@ if (!device) {
 }
 function handleEncryptedEvent(event) {
   if (event.type === "codex.event") {
-    const params = event.params;
+    const params = event.params ?? {};
+    if (params.threadId && activeThreadId && params.threadId !== activeThreadId) return;
     const turn = params?.turn;
     if (typeof turn?.id === "string") activeTurnId = turn.id;
-    output.textContent += `${JSON.stringify({ method: event.method, params: event.params }, null, 2)}
-`;
-    output.scrollTop = output.scrollHeight;
+    handleCodexEvent(String(event.method ?? ""), params);
   }
   if (event.type !== "approval.requested") return;
   const approvalId = String(event.requestId ?? "");
@@ -4302,15 +4318,116 @@ async function loadThreads() {
 async function openThread(threadId) {
   if (!transport || !threadId) return;
   activeThreadId = threadId;
-  output.textContent = JSON.stringify(await transport.request("thread.open", { threadId }), null, 2);
+  const result = await transport.request("thread.open", { threadId });
+  renderConversation(result.thread ?? {});
+}
+function renderConversation(thread) {
+  renderedItems.clear();
+  output.replaceChildren();
+  const turns = thread.turns ?? [];
+  for (const turn of turns) for (const item of turn.items ?? []) renderItem(item, false);
+  const active = [...turns].reverse().find((turn) => turn.status === "inProgress");
+  activeTurnId = typeof active?.id === "string" ? active.id : "";
+  scrollConversation();
+}
+function handleCodexEvent(method, params) {
+  if (method === "turn/started") {
+    const turn = params.turn;
+    activeTurnId = typeof turn?.id === "string" ? turn.id : activeTurnId;
+  } else if (method === "turn/completed") {
+    activeTurnId = "";
+    void loadThreads();
+  } else if (method === "item/started" || method === "item/completed") {
+    if (params.item && typeof params.item === "object") renderItem(params.item);
+  } else if (method === "item/agentMessage/delta") {
+    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "agent");
+  } else if (method === "item/reasoning/summaryTextDelta") {
+    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "reasoning");
+  } else if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
+    appendToolDelta(String(params.itemId ?? ""), String(params.delta ?? ""));
+  } else if (method === "error" || method === "warning") {
+    fail(String(params.message ?? params.error?.message ?? "Codex reported an error"));
+  }
+}
+function renderItem(item, scroll = true) {
+  const id = String(item.id ?? crypto.randomUUID());
+  let node = renderedItems.get(id);
+  if (!node) {
+    if (item.type === "userMessage") {
+      node = document.createElement("div");
+      node.className = "chat-message user";
+      const content = item.content ?? [];
+      node.textContent = content.map((part) => String(part.text ?? "")).join("");
+    } else if (item.type === "agentMessage") {
+      node = document.createElement("div");
+      node.className = "chat-message agent";
+      node.textContent = String(item.text ?? "");
+    } else if (item.type === "reasoning") {
+      node = document.createElement("div");
+      node.className = "chat-message reasoning";
+      node.textContent = (item.summary ?? []).map(String).join("\n");
+    } else {
+      const details = document.createElement("details");
+      details.className = "chat-tool";
+      const summary = document.createElement("summary");
+      summary.textContent = toolTitle(item);
+      const body = document.createElement("pre");
+      body.textContent = toolBody(item);
+      body.dataset.toolBody = "true";
+      details.append(summary, body);
+      node = details;
+    }
+    node.dataset.itemId = id;
+    renderedItems.set(id, node);
+    output.append(node);
+  } else if (item.type === "agentMessage") node.textContent = String(item.text ?? node.textContent);
+  else if (item.type === "reasoning") node.textContent = (item.summary ?? []).map(String).join("\n");
+  else {
+    const body = node.querySelector("[data-tool-body]");
+    if (body) body.textContent = toolBody(item);
+  }
+  if (scroll) scrollConversation();
+}
+function appendDelta(id, delta, kind) {
+  let node = renderedItems.get(id);
+  if (!node) {
+    node = document.createElement("div");
+    node.className = `chat-message ${kind}`;
+    node.dataset.itemId = id;
+    renderedItems.set(id, node);
+    output.append(node);
+  }
+  node.textContent += delta;
+  scrollConversation();
+}
+function appendToolDelta(id, delta) {
+  const body = renderedItems.get(id)?.querySelector("[data-tool-body]");
+  if (body) body.textContent += delta;
+  scrollConversation();
+}
+function toolTitle(item) {
+  if (item.type === "commandExecution") return `Terminal \xB7 ${String(item.status ?? "running")}`;
+  if (item.type === "fileChange") return `Files changed \xB7 ${String(item.status ?? "running")}`;
+  if (item.type === "mcpToolCall") return `${String(item.server ?? "MCP")} / ${String(item.tool ?? "tool")}`;
+  if (item.type === "plan") return "Plan";
+  return String(item.type ?? "Codex activity").replace(/([A-Z])/g, " $1");
+}
+function toolBody(item) {
+  if (item.type === "commandExecution") return [item.command, item.aggregatedOutput].filter(Boolean).map(String).join("\n\n");
+  if (item.type === "fileChange") return (item.changes ?? []).map((change) => `${String(change.kind)}: ${String(change.path)}
+${String(change.diff ?? "")}`).join("\n\n");
+  if (item.type === "plan") return String(item.text ?? "");
+  return JSON.stringify(item, null, 2);
+}
+function scrollConversation() {
+  requestAnimationFrame(() => {
+    output.scrollTop = output.scrollHeight;
+  });
 }
 async function sendMessage() {
   const text2 = promptInput.value.trim();
   if (!transport || !activeThreadId || !text2) return;
   promptInput.value = "";
-  output.textContent += `
-You: ${text2}
-`;
   const result = await transport.request("turn.start", { threadId: activeThreadId, text: text2 });
   const turn = result.turn;
   if (typeof turn?.id === "string") activeTurnId = turn.id;

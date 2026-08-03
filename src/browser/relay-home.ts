@@ -13,6 +13,7 @@ const output = document.querySelector<HTMLElement>("#conversation-output")!;
 const promptInput = document.querySelector<HTMLTextAreaElement>("#prompt-input")!;
 let activeThreadId = "";
 let activeTurnId = "";
+const renderedItems = new Map<string, HTMLElement>();
 let transport: EncryptedTransport | null = null;
 let backgroundTimer: number | null = null;
 let sessionTimer: number | null = null;
@@ -26,6 +27,13 @@ if (!device) {
   try {
     status.textContent = "Establishing encrypted connection to your home bridge…";
     transport = new EncryptedTransport(device);
+    transport.onClose(() => {
+      transport = null;
+      chatPanel.hidden = true;
+      title.textContent = "Connection closed";
+      copy.textContent = "Reload and use Face ID to establish a new encrypted channel.";
+      status.textContent = "Encrypted connection closed";
+    });
     await transport.connect();
     transport.onEvent(handleEncryptedEvent);
     const auth = await transport.request("auth.status") as { registered: boolean; authenticatedUntil: number };
@@ -36,11 +44,11 @@ if (!device) {
 
 function handleEncryptedEvent(event: Record<string, unknown>): void {
   if (event.type === "codex.event") {
-    const params = event.params as Record<string, unknown> | undefined;
+    const params = (event.params ?? {}) as Record<string, unknown>;
+    if (params.threadId && activeThreadId && params.threadId !== activeThreadId) return;
     const turn = params?.turn as Record<string, unknown> | undefined;
     if (typeof turn?.id === "string") activeTurnId = turn.id;
-    output.textContent += `${JSON.stringify({ method: event.method, params: event.params }, null, 2)}\n`;
-    output.scrollTop = output.scrollHeight;
+    handleCodexEvent(String(event.method ?? ""), params);
   }
   if (event.type !== "approval.requested") return;
   const approvalId = String(event.requestId ?? "");
@@ -156,14 +164,108 @@ async function loadThreads(): Promise<void> {
 async function openThread(threadId: string): Promise<void> {
   if (!transport || !threadId) return;
   activeThreadId = threadId;
-  output.textContent = JSON.stringify(await transport.request("thread.open", { threadId }), null, 2);
+  const result = await transport.request("thread.open", { threadId }) as { thread?: Record<string, unknown> };
+  renderConversation(result.thread ?? {});
 }
+
+function renderConversation(thread: Record<string, unknown>): void {
+  renderedItems.clear();
+  output.replaceChildren();
+  const turns = (thread.turns ?? []) as Array<Record<string, unknown>>;
+  for (const turn of turns) for (const item of (turn.items ?? []) as Array<Record<string, unknown>>) renderItem(item, false);
+  const active = [...turns].reverse().find((turn) => turn.status === "inProgress");
+  activeTurnId = typeof active?.id === "string" ? active.id : "";
+  scrollConversation();
+}
+
+function handleCodexEvent(method: string, params: Record<string, unknown>): void {
+  if (method === "turn/started") {
+    const turn = params.turn as Record<string, unknown> | undefined;
+    activeTurnId = typeof turn?.id === "string" ? turn.id : activeTurnId;
+  } else if (method === "turn/completed") {
+    activeTurnId = "";
+    void loadThreads();
+  } else if (method === "item/started" || method === "item/completed") {
+    if (params.item && typeof params.item === "object") renderItem(params.item as Record<string, unknown>);
+  } else if (method === "item/agentMessage/delta") {
+    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "agent");
+  } else if (method === "item/reasoning/summaryTextDelta") {
+    appendDelta(String(params.itemId ?? ""), String(params.delta ?? ""), "reasoning");
+  } else if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
+    appendToolDelta(String(params.itemId ?? ""), String(params.delta ?? ""));
+  } else if (method === "error" || method === "warning") {
+    fail(String(params.message ?? (params.error as Record<string, unknown> | undefined)?.message ?? "Codex reported an error"));
+  }
+}
+
+function renderItem(item: Record<string, unknown>, scroll = true): void {
+  const id = String(item.id ?? crypto.randomUUID());
+  let node = renderedItems.get(id);
+  if (!node) {
+    if (item.type === "userMessage") {
+      node = document.createElement("div");
+      node.className = "chat-message user";
+      const content = (item.content ?? []) as Array<Record<string, unknown>>;
+      node.textContent = content.map((part) => String(part.text ?? "")).join("");
+    } else if (item.type === "agentMessage") {
+      node = document.createElement("div"); node.className = "chat-message agent"; node.textContent = String(item.text ?? "");
+    } else if (item.type === "reasoning") {
+      node = document.createElement("div"); node.className = "chat-message reasoning"; node.textContent = ((item.summary ?? []) as unknown[]).map(String).join("\n");
+    } else {
+      const details = document.createElement("details"); details.className = "chat-tool";
+      const summary = document.createElement("summary"); summary.textContent = toolTitle(item);
+      const body = document.createElement("pre"); body.textContent = toolBody(item); body.dataset.toolBody = "true";
+      details.append(summary, body); node = details;
+    }
+    node.dataset.itemId = id;
+    renderedItems.set(id, node);
+    output.append(node);
+  } else if (item.type === "agentMessage") node.textContent = String(item.text ?? node.textContent);
+  else if (item.type === "reasoning") node.textContent = ((item.summary ?? []) as unknown[]).map(String).join("\n");
+  else {
+    const body = node.querySelector<HTMLElement>("[data-tool-body]");
+    if (body) body.textContent = toolBody(item);
+  }
+  if (scroll) scrollConversation();
+}
+
+function appendDelta(id: string, delta: string, kind: "agent" | "reasoning"): void {
+  let node = renderedItems.get(id);
+  if (!node) {
+    node = document.createElement("div"); node.className = `chat-message ${kind}`; node.dataset.itemId = id;
+    renderedItems.set(id, node); output.append(node);
+  }
+  node.textContent += delta;
+  scrollConversation();
+}
+
+function appendToolDelta(id: string, delta: string): void {
+  const body = renderedItems.get(id)?.querySelector<HTMLElement>("[data-tool-body]");
+  if (body) body.textContent += delta;
+  scrollConversation();
+}
+
+function toolTitle(item: Record<string, unknown>): string {
+  if (item.type === "commandExecution") return `Terminal · ${String(item.status ?? "running")}`;
+  if (item.type === "fileChange") return `Files changed · ${String(item.status ?? "running")}`;
+  if (item.type === "mcpToolCall") return `${String(item.server ?? "MCP")} / ${String(item.tool ?? "tool")}`;
+  if (item.type === "plan") return "Plan";
+  return String(item.type ?? "Codex activity").replace(/([A-Z])/g, " $1");
+}
+
+function toolBody(item: Record<string, unknown>): string {
+  if (item.type === "commandExecution") return [item.command, item.aggregatedOutput].filter(Boolean).map(String).join("\n\n");
+  if (item.type === "fileChange") return ((item.changes ?? []) as Array<Record<string, unknown>>).map((change) => `${String(change.kind)}: ${String(change.path)}\n${String(change.diff ?? "")}`).join("\n\n");
+  if (item.type === "plan") return String(item.text ?? "");
+  return JSON.stringify(item, null, 2);
+}
+
+function scrollConversation(): void { requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; }); }
 
 async function sendMessage(): Promise<void> {
   const text = promptInput.value.trim();
   if (!transport || !activeThreadId || !text) return;
   promptInput.value = "";
-  output.textContent += `\nYou: ${text}\n`;
   const result = await transport.request("turn.start", { threadId: activeThreadId, text }) as Record<string, unknown>;
   const turn = result.turn as Record<string, unknown> | undefined;
   if (typeof turn?.id === "string") activeTurnId = turn.id;
