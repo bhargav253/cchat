@@ -39,6 +39,6 @@
     "@types/qrcode": "^1.5.5",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.25.12",
-    "typescript": "^5.9.0"
+    "typescript": "^7.0.2"
   }
 }
