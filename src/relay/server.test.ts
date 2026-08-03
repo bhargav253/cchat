@@ -84,6 +84,10 @@ test("relay pairs a phone only after the authenticated bridge approves its proof
   const opaqueReply = { kind: "envelope", envelope: { ciphertext: "opaque" } };
   bridge.send(JSON.stringify({ type: "phone.frame", connectionId: connected.connectionId, frame: opaqueReply }));
   assert.deepEqual((await nextMessage(routedPhone)).frame, opaqueReply);
+  const largeOpaqueFrame = { kind: "envelope", envelope: { ciphertext: "x".repeat(128 * 1024) } };
+  routedPhone.send(JSON.stringify({ type: "phone.frame", frame: largeOpaqueFrame }));
+  const largeRouted = await nextMessage(bridge);
+  assert.equal(String(((largeRouted.frame as Record<string, unknown>).envelope as Record<string, unknown>).ciphertext).length, 128 * 1024);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(relayOutput.includes("relay-must-not-interpret-this"), false);
   assert.equal(relayOutput.includes(pairingToken), false);

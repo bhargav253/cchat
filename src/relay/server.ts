@@ -10,6 +10,7 @@ const HOST = process.env.CCHAT_RELAY_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.CCHAT_RELAY_PORT ?? 8787);
 const PUBLIC_ORIGIN = process.env.CCHAT_PUBLIC_ORIGIN ?? "https://mycchat.win";
 const DATABASE_PATH = process.env.CCHAT_RELAY_DB ?? "./data/relay.sqlite";
+const MAX_ROUTED_FRAME_BYTES = 4 * 1024 * 1024;
 const publicDir = fileURLToPath(new URL("../../relay-public", import.meta.url));
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
@@ -110,7 +111,7 @@ const server = createServer((request, response) => {
 
 const bridgeSockets = new Map<string, { socket: WebSocket; deviceId: string }>();
 const phoneSockets = new Map<string, WebSocket>();
-const wsServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const wsServer = new WebSocketServer({ noServer: true, maxPayload: MAX_ROUTED_FRAME_BYTES });
 
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "/", PUBLIC_ORIGIN);
@@ -127,6 +128,11 @@ wsServer.on("connection", (socket) => {
   let bridgeInstallationId: string | null = null;
   const connectionIds = new Set<string>();
   const authTimer = setTimeout(() => socket.close(1008, "Authentication timeout"), 10_000);
+  socket.on("error", (error) => {
+    // Protocol and payload errors belong to this connection and must never
+    // terminate the relay process or other encrypted channels.
+    console.warn(`WebSocket connection closed: ${error.message}`);
+  });
   let messageCount = 0;
   const messageWindow = setInterval(() => { messageCount = 0; }, 60_000);
   messageWindow.unref();
