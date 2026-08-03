@@ -94,6 +94,9 @@ The protocol and relay security work is tracked in
 control-plane storage have automated tests, but are not yet connected to the
 browser/bridge data path.
 
+The locked staging deployment for `mycchat.win` is documented in
+[docs/deployment.md](docs/deployment.md).
+
 ## License
 
 MIT

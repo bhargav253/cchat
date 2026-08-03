@@ -1,0 +1,40 @@
+[Unit]
+Description=cchat encrypted relay
+Documentation=https://github.com/bhargav253/cchat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cchat
+Group=cchat
+WorkingDirectory=/opt/cchat
+ExecStart=/usr/bin/node /opt/cchat/src/relay/server.ts
+EnvironmentFile=/etc/cchat/relay.env
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+KillMode=mixed
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/cchat
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

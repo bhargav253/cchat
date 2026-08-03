@@ -12,12 +12,14 @@
     "start": "node src/server.ts",
     "typecheck": "tsc --noEmit",
     "check:browser": "node --check public/app.js",
-    "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs",
+    "check:scripts": "node --check scripts/install-user-service.mjs && node --check scripts/uninstall-user-service.mjs && node --check scripts/init-relay.mjs",
     "test": "node --test src/**/*.test.ts",
     "check": "npm run typecheck && npm run check:browser && npm run check:scripts && npm test",
     "service:install": "node scripts/install-user-service.mjs",
     "service:uninstall": "node scripts/uninstall-user-service.mjs",
-    "service:status": "systemctl --user status cchat.service"
+    "service:status": "systemctl --user status cchat.service",
+    "relay:init": "node scripts/init-relay.mjs",
+    "relay:start": "node src/relay/server.ts"
   },
   "engines": {
     "node": ">=24"
