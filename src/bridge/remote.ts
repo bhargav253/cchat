@@ -16,12 +16,15 @@ export type RemoteConfig = {
 type PendingInvitation = { token: string; expiresAt: number };
 
 export class RemoteBridge {
+  readonly config: RemoteConfig;
   private socket: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private stopped = false;
   private pending = new Map<string, PendingInvitation>();
 
-  constructor(readonly config: RemoteConfig) {}
+  constructor(config: RemoteConfig) {
+    this.config = config;
+  }
 
   start(): void {
     this.stopped = false;

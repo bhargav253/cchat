@@ -192,7 +192,7 @@ server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Reques
 server.listen(PORT, HOST, () => {
   console.log(`cchat relay staging server: http://${HOST}:${PORT}`);
   console.log(`public origin: ${PUBLIC_ORIGIN}`);
-  console.log("status: locked; pairing and encrypted routing are not enabled");
+  console.log("status: one-time device pairing enabled; encrypted Codex routing not yet enabled");
 });
 
 function serveStatic(url: string, response: ServerResponse, headOnly: boolean): void {
